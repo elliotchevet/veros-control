@@ -120,4 +120,3 @@ def extract_features(state, tau, stats=None, normalize=False, mask=None, scaling
             raise ValueError(f"Unsupported scaling_method: {scaling_method}")
     else:
         return features
-

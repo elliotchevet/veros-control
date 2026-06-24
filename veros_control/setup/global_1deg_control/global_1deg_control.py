@@ -12,6 +12,14 @@ from veros.variables import Variable, allocate
 from veros.core.operators import numpy as npx, update, update_multiply, at
 from jax import lax
 
+from veros_control.core.checkpointing import load_checkpoint, checkpoint_model_kwargs
+from veros_control.core.forcing import (
+    add_nn_forcing_to_state,
+    make_batched_model,
+    predict_nn_forcing,
+)
+from veros_control.core.model import VerticalCorrectionMLP
+
 BASE_PATH = os.path.dirname(os.path.realpath(__file__))
 DATA_FILES = tools.get_assets("global_1deg_control", os.path.join(BASE_PATH, "assets.json"))
 
@@ -107,6 +115,10 @@ class GlobalOneDegreeSetup(VerosSetup):
 
         # additional settings
         settings.smooth = 3
+        self._nn_correction_initialized = False
+        self._nn_params = None
+        self._nn_model_batched = None
+        self._nn_stats = None
 
         # custom variables
         state.dimensions["nmonths"] = 12
@@ -126,6 +138,71 @@ class GlobalOneDegreeSetup(VerosSetup):
         # define ERA5 start time index
         self.n0 = self.ERA5_start_index(DATA_FILES["forcing_era5"], settings.start_date)
         print('n0 = ',self.n0)
+
+    def _init_nn_correction(self, state):
+        settings = state.settings
+
+        if self._nn_correction_initialized:
+            return
+
+        self._nn_correction_initialized = True
+
+        if settings.baseline_model:
+            print("NN correction disabled: baseline_model=True")
+            return
+
+        checkpoint = load_checkpoint(settings.nn_checkpoint_path)
+        if checkpoint is None:
+            print("NN correction disabled: no checkpoint loaded")
+            return
+
+        if "params" not in checkpoint:
+            print("NN correction disabled: checkpoint has no 'params' entry")
+            return
+
+        model_defaults = dict(
+            hidden_dim=settings.hidden_dim_nn,
+            depth=settings.depth_nn,
+            nz=settings.nz,
+            nb_profiles=4,
+            init_eps=settings.epsilon,
+            train_epsilon=settings.train_epsilon,
+            use_lon_lat=settings.use_lon_lat,
+            conservative_mixing=settings.conservative_mixing,
+            use_one_hot=settings.use_one_hot,
+            num_mlps=settings.num_mlps,
+            TS=settings.TS,
+        )
+        model_kwargs = checkpoint_model_kwargs(checkpoint, model_defaults)
+        model_kwargs["nz"] = settings.nz
+
+        model = VerticalCorrectionMLP(**model_kwargs)
+        self._nn_model_batched = make_batched_model(model)
+        self._nn_params = checkpoint["params"]
+        self._nn_stats = checkpoint.get("stats_features", checkpoint.get("features_stats"))
+
+        print(
+            "NN correction enabled from checkpoint "
+            f"{settings.nn_checkpoint_path} with {model_kwargs}"
+        )
+
+    def _apply_nn_forcing(self, state):
+        settings = state.settings
+
+        self._init_nn_correction(state)
+        if self._nn_params is None:
+            return
+
+        dtemp, dsalt, du, dv = predict_nn_forcing(
+            state,
+            self._nn_params,
+            self._nn_model_batched,
+            stats=self._nn_stats,
+            normalize=settings.normalize_inputs,
+            scaling_method=settings.scaling_method_features,
+        )
+
+        add_nn_forcing_to_state(state, dtemp, dsalt, du, dv)
 
     def _read_forcing(self, var):
         from veros.core.operators import numpy as npx
@@ -456,6 +533,7 @@ class GlobalOneDegreeSetup(VerosSetup):
             vs.tp = update(vs.tp, at[2:-2, 2:-2, :], tp_data * vs.maskT[2:-2, 2:-2, -1, npx.newaxis])
 
         vs.update(set_forcing_kernel(state))
+        self._apply_nn_forcing(state)
 
     @veros_routine
     def set_diagnostics(self, state):
@@ -480,7 +558,11 @@ class GlobalOneDegreeSetup(VerosSetup):
             "P_diss_nonlin",
             "P_diss_iso",
             "kappaH",
-            "maskT"
+            "maskT",
+            "dtemp_nn",
+            "dsalt_nn",
+            "du_nn",
+            "dv_nn",
         ]
         if settings.enable_skew_diffusion:
             average_vars += ["B1_gm", "B2_gm"]

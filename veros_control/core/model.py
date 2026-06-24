@@ -1,14 +1,16 @@
 from veros.core.operators import numpy as npx, update, at
-from jax import vjp, vmap, jit
-from functools import partial
 from flax import linen as nn
-from flax.traverse_util import flatten_dict, unflatten_dict
-import optax
+
+def raw_epsilon_init(target_eps: float) -> float:
+    if target_eps <= 0:
+        raise ValueError("target_eps must be positive")
+
+    return npx.log(npx.expm1(target_eps))
 
 class VerticalCorrectionMLP(nn.Module):
     hidden_dim: int = 64
     depth: int = 2
-    nz: int = 15
+    nz: int = 3
     nb_profiles: int = 4                  # always 4 outputs: T, S, U, V
     init_eps: float = 1e-6
     train_epsilon: bool = False
@@ -112,3 +114,4 @@ class VerticalCorrectionMLP(nn.Module):
         # -------- Concatenate outputs --------
         x_out = npx.concatenate(outputs, axis=1)  # shape = (nz, nb_outputs)
         return x_out
+
