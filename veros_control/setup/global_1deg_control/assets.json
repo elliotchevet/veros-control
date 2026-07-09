@@ -7,15 +7,15 @@
     "url": "/Odyssey/private/e25cheve/veros/veros_assets/global_1deg_control/ERA5_1deg_1986_Flux_processed.nc"
   },
   "ic_glorys12": {
-    "url": "https://osf.io/5at63/download/",
-    "filename": "glorys12_initial_conditions.nc"
+    "url": "/Odyssey/private/e25cheve/veros/veros_assets/global_1deg_control/glorys12_initial_conditions.nc"
+  },
+  "ic_veros": {
+    "url": "/Odyssey/private/e25cheve/veros/veros_assets/global_1deg_control/global_1deg_realistic.snapshot.nc"
   },
   "restoring_glorys12": {
-    "url": "https://osf.io/Hwbna/download/",
-    "filename": "glorys12_restoring.nc"
+    "url": "/Odyssey/private/e25cheve/veros/veros_assets/global_1deg_control/glorys12_restoring.nc"
   },
   "mask": {
-    "url": "https://osf.io/Kh28w/download/",
-    "filename": "masks.nc"
+    "url": "/Odyssey/private/e25cheve/veros/veros_assets/global_1deg_control/masks.nc"
   }
 }

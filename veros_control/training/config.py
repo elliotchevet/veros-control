@@ -25,11 +25,15 @@ class TrainConfig:
     resume_training: bool = False
     resume_checkpoint_path: str | None = None
     save_every: int = 5
+    control_mode: str = "r_bot"  # "r_bot" or "nn"
+    r_bot_init: float | None = None
 
     # rollout
     n_steps: int = 120
     sample_steps: int = 120
     use_jax_checkpoint: bool = True
+    grad_mode: str = "manual_vjp"  # "builtin" or "manual_vjp"
+    restart_interval_steps: int = 120
 
     # data
     restart_files: list[str] = field(default_factory=list)

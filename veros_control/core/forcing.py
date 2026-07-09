@@ -1,4 +1,5 @@
 import jax
+import jax.numpy as jnp 
 from veros.core.operators import numpy as npx, update, at
 
 from veros_control.core.preprocessing import extract_features, restagger_uv, stack_coords
@@ -49,7 +50,6 @@ def predict_nn_forcing(
 
 def make_batched_model(model):
     return jax.vmap(model.apply, in_axes=(None, 0, 0, None))
-
 
 def write_nn_tendency_diagnostics(state, dtemp, dsalt, du, dv):
     vs = state.variables

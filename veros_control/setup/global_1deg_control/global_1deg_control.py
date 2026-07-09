@@ -70,6 +70,7 @@ class GlobalOneDegreeSetup(VerosSetup):
         settings.enable_ray_friction = False
         settings.r_ray = 1e-5  # weak interior damping
         settings.enable_tempsalt_sources = True
+        settings.enable_momentum_sources = True
         settings.enable_implicit_vert_friction = True
 
         settings.eq_of_state_type = 5
@@ -80,7 +81,7 @@ class GlobalOneDegreeSetup(VerosSetup):
         settings.K_iso_steep = 50.0
         settings.iso_dslope = 0.005
         settings.iso_slopec = 0.005
-        settings.enable_skew_diffusion = True
+        settings.enable_skew_diffusion = False
 
         # tke
         settings.enable_tke = True
@@ -90,7 +91,7 @@ class GlobalOneDegreeSetup(VerosSetup):
         settings.mxl_min = 1e-8
         settings.tke_mxl_choice = 1
         settings.kappaM_min = 2e-4
-        settings.kappaH_min = 2e-5
+        settings.kappaH_min = 5e-6
         settings.enable_kappaH_profile = True
         settings.enable_tke_superbee_advection = True
 
@@ -122,6 +123,8 @@ class GlobalOneDegreeSetup(VerosSetup):
 
         # custom variables
         state.dimensions["nmonths"] = 12
+        if (365 * 24) % settings.dt_forcing != 0:
+            raise ValueError("dt_forcing must divide the 365-day hourly forcing year")
         state.dimensions["n_window"] = 2
         state.var_meta.update(
             qnet=Variable("qnet", ("xt", "yt", "n_window"), "", "", time_dependent=False),
@@ -133,11 +136,8 @@ class GlobalOneDegreeSetup(VerosSetup):
             tp =Variable("tp", ("xt", "yt", "n_window"), "", "", time_dependent=False),
             t_star =Variable("t_star", ("xt", "yt", "nmonths"), "", "", time_dependent=False),
             s_star =Variable("s_star", ("xt", "yt", "nmonths"), "", "", time_dependent=False),
+            forcing_time_shift=Variable("Forcing clock offset from January 1", tuple(), "s", "", time_dependent=False),
         )
-
-        # define ERA5 start time index
-        self.n0 = self.ERA5_start_index(DATA_FILES["forcing_era5"], settings.start_date)
-        print('n0 = ',self.n0)
 
     def _init_nn_correction(self, state):
         settings = state.settings
@@ -177,7 +177,9 @@ class GlobalOneDegreeSetup(VerosSetup):
         model_kwargs["nz"] = settings.nz
 
         model = VerticalCorrectionMLP(**model_kwargs)
-        self._nn_model_batched = make_batched_model(model)
+        self._nn_model_batched = make_batched_model(
+            model
+        )
         self._nn_params = checkpoint["params"]
         self._nn_stats = checkpoint.get("stats_features", checkpoint.get("features_stats"))
 
@@ -189,7 +191,6 @@ class GlobalOneDegreeSetup(VerosSetup):
     def _apply_nn_forcing(self, state):
         settings = state.settings
 
-        self._init_nn_correction(state)
         if self._nn_params is None:
             return
 
@@ -234,32 +235,20 @@ class GlobalOneDegreeSetup(VerosSetup):
             return npx.asarray(var)
         
 
-    def ERA5_start_index(self,forcing_file, start_date):
+    def forcing_time_shift_seconds(self, start_date, model_year_seconds):
         from datetime import datetime
-        ref = datetime(1900, 1, 1)
-        d0 = datetime.strptime(start_date, "%Y-%m-%d")
-        with h5netcdf.File(forcing_file, "r") as f:
-            time0 = int(f.variables["time"][0])
-        h0 = int((d0 - ref).total_seconds() // 3600)
-        return h0 - time0
 
-    def _read_ERA5(self,var):
-        if not hasattr(self, "_era5_ds"):
-            self._era5_ds = xr.open_dataset(
-                DATA_FILES["forcing_era5"],
-                engine="h5netcdf",
-                chunks={"time": 1},  
-            )
-        return self._era5_ds[var]
+        date = datetime.strptime(start_date, "%Y-%m-%d")
+        month_days = (31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
+        if date.month == 2 and date.day == 29:
+            raise ValueError("forcing start_date cannot be February 29 with 365-day forcing data")
 
-    def get_ERA5(self, var, n1, n2):
-        from datetime import datetime, timedelta
-        var_da = self._read_ERA5(var)
-        sliced = var_da.isel(time=[self.n0+n1,self.n0+n2])
-        if var == 'ewss':
-            t0 = datetime(1900,1,1)
-            print('time = ',var_da.time.values[self.n0+n1])
-        return npx.asarray(sliced).T
+        day_of_year = sum(month_days[: date.month - 1]) + date.day - 1
+        return day_of_year / 365.0 * model_year_seconds
+
+    def _read_ERA5_forcing(self, var, n_forcing, dt_forcing):
+        with h5netcdf.File(DATA_FILES["forcing_era5"], "r") as infile:
+            return npx.asarray(infile.variables[var]).T[..., ::dt_forcing][..., :n_forcing]
 
     @veros_routine(dist_safe=False, local_variables=["dxt", "dyt", "dzt"])
     def set_grid(self, state):
@@ -363,6 +352,7 @@ class GlobalOneDegreeSetup(VerosSetup):
             "qnet",
             "qsol",
             "evap",
+            "forcing_time_shift",
             "t_star",
             "s_star",
             "tp",
@@ -467,8 +457,29 @@ class GlobalOneDegreeSetup(VerosSetup):
         vs.t_star = update(vs.t_star, at[2:-2, 2:-2,:], t_star * vs.maskT[2:-2, 2:-2, -1, npx.newaxis])
         s_star = self._read_restoring("so")
         vs.s_star = update(vs.s_star, at[2:-2, 2:-2,:], s_star * vs.maskT[2:-2, 2:-2, -1, npx.newaxis])
-        self.n_flow = -1
 
+        vs.forcing_time_shift = update(
+            vs.forcing_time_shift,
+            at[...],
+            self.forcing_time_shift_seconds(
+                settings.start_date,
+                time.convert_time(1.0, "years", "seconds"),
+                ))
+        n_forcing = int(365 * 24 / settings.dt_forcing)
+
+        self._taux_forcing = self._read_ERA5_forcing("ewss", n_forcing, settings.dt_forcing) / 3600
+        self._tauy_forcing = self._read_ERA5_forcing("nsss", n_forcing, settings.dt_forcing) / 3600
+        self._qnet_forcing = (
+            self._read_ERA5_forcing("str", n_forcing, settings.dt_forcing)
+            + self._read_ERA5_forcing("slhf", n_forcing, settings.dt_forcing)
+            + self._read_ERA5_forcing("sshf", n_forcing, settings.dt_forcing)
+        ) / 3600
+        self._qsol_forcing = self._read_ERA5_forcing("ssr", n_forcing, settings.dt_forcing) / 3600
+        self._evap_forcing = self._read_ERA5_forcing("e", n_forcing, settings.dt_forcing) / 3600
+        self._tp_forcing = self._read_ERA5_forcing("tp", n_forcing, settings.dt_forcing) / 3600
+
+        #self._init_nn_correction(state)
+        
         if settings.enable_idemix:
             tidal_energy_data = self._read_forcing("tidal_energy")
             mask = (
@@ -498,42 +509,18 @@ class GlobalOneDegreeSetup(VerosSetup):
     @veros_routine
     def set_forcing(self, state):
         vs = state.variables
-        settings = state.settings
-        year_in_seconds = time.convert_time(1.0, "years", "seconds")
-        n_forcing = 365 * 24 / settings.dt_forcing
-        (n1, f1), (n2, f2) = tools.get_periodic_interval(vs.time, year_in_seconds, year_in_seconds / n_forcing, n_forcing)
-        if self.n_flow != n1:
-            self.n_flow = n1
-            n1 = n1*settings.dt_forcing
-            n2 = n2*settings.dt_forcing
-            print("forcing update n°{}".format(n1))
-            taux_data = self.get_ERA5("ewss",n1,n2)/3600
-            vs.taux = update(vs.taux, at[2:-2, 2:-2, :], taux_data) 
-            tauy_data = self.get_ERA5("nsss",n1,n2)/3600
-            vs.tauy = update(vs.tauy, at[2:-2, 2:-2, :], tauy_data) 
-            vs.update(set_forcing_kernel(state))
-            str_ = self.get_ERA5("str",n1,n2)
-            Qir = str_/3600
-            slhf = self.get_ERA5("slhf",n1,n2)
-            Qlat = slhf/3600
-            sshf = self.get_ERA5("sshf",n1,n2)
-            Qh = sshf/3600
-            Qnet = Qir + Qlat + Qh
-            vs.qnet = update(vs.qnet, at[2:-2, 2:-2, :], Qnet * vs.maskT[2:-2, 2:-2, -1, npx.newaxis])
-            ssr = self.get_ERA5("ssr",n1,n2)
-            Qsol = ssr/3600
-            vs.qsol = update(vs.qsol, at[2:-2, 2:-2, :], Qsol* vs.maskT[2:-2, 2:-2, -1, npx.newaxis])
-            
-            # Evaporation 
-            evap_data = self.get_ERA5("e",n1,n2)/3600
-            vs.evap = update(vs.evap, at[2:-2, 2:-2, :], evap_data * vs.maskT[2:-2, 2:-2, -1, npx.newaxis])
-
-            # Total precipitation
-            tp_data = self.get_ERA5("tp",n1,n2)/3600
-            vs.tp = update(vs.tp, at[2:-2, 2:-2, :], tp_data * vs.maskT[2:-2, 2:-2, -1, npx.newaxis])
-
-        vs.update(set_forcing_kernel(state))
-        self._apply_nn_forcing(state)
+        vs.update(
+            set_forcing_kernel(
+                state,
+                self._taux_forcing,
+                self._tauy_forcing,
+                self._qnet_forcing,
+                self._qsol_forcing,
+                self._evap_forcing,
+                self._tp_forcing,
+            )
+        )
+        #self._apply_nn_forcing(state)    
 
     @veros_routine
     def set_diagnostics(self, state):
@@ -620,7 +607,15 @@ class GlobalOneDegreeSetup(VerosSetup):
 
 
 @veros_kernel
-def set_forcing_kernel(state):
+def set_forcing_kernel(
+    state,
+    taux_forcing,
+    tauy_forcing,
+    qnet_forcing,
+    qsol_forcing,
+    evap_forcing,
+    tp_forcing,
+):
     vs = state.variables
     settings = state.settings
 
@@ -628,13 +623,49 @@ def set_forcing_kernel(state):
     dQdT = -40 # W/m2 /K (2 months for a 50m mld)
     Ks = -6.37e-6 # piston velocity in m/s (3 months for a 50m mld)
 
-    year_in_seconds = time.convert_time(1.0, "years", "seconds")
-    n_forcing = 365 * 24 / settings.dt_forcing
-    (n1, f1), (n2, f2) = tools.get_periodic_interval(vs.time, year_in_seconds, year_in_seconds / n_forcing, n_forcing)
+    model_year_seconds = time.convert_time(1.0, "years", "seconds")
+    forcing_time = vs.time + vs.forcing_time_shift
 
-    (n1_rest, f1_rest), (n2_rest, f2_rest) = tools.get_periodic_interval(vs.time, year_in_seconds, year_in_seconds / 12.0, 12)
-    vs.surface_taux = update(vs.surface_taux, at[:, :], f1 * vs.taux[:, :, 0] + f2 * vs.taux[:, :, 1])
-    vs.surface_tauy = update(vs.surface_tauy, at[:, :], f1 * vs.tauy[:, :, 0] + f2 * vs.tauy[:, :, 1])
+    (n1, f1), (n2, f2) = tools.get_periodic_interval(
+        forcing_time,
+        model_year_seconds,
+        model_year_seconds / taux_forcing.shape[-1],
+        taux_forcing.shape[-1],
+    )
+
+    (n1_rest, f1_rest), (n2_rest, f2_rest) = tools.get_periodic_interval(
+        forcing_time,
+        model_year_seconds,
+        model_year_seconds / 12.0,
+        12,
+    )
+
+    mask_surface = vs.maskT[2:-2, 2:-2, -1, npx.newaxis]
+    taux_data = npx.stack([taux_forcing[:, :, n1], taux_forcing[:, :, n2]], axis=-1) * mask_surface
+    tauy_data = npx.stack([tauy_forcing[:, :, n1], tauy_forcing[:, :, n2]], axis=-1) * mask_surface
+    qnet_data = npx.stack([qnet_forcing[:, :, n1], qnet_forcing[:, :, n2]], axis=-1) * mask_surface
+    qsol_data = npx.stack([qsol_forcing[:, :, n1], qsol_forcing[:, :, n2]], axis=-1) * mask_surface
+    evap_data = npx.stack([evap_forcing[:, :, n1], evap_forcing[:, :, n2]], axis=-1) * mask_surface
+    tp_data = npx.stack([tp_forcing[:, :, n1], tp_forcing[:, :, n2]], axis=-1) * mask_surface
+
+    taux_window = update(npx.zeros_like(vs.taux), at[2:-2, 2:-2, :], taux_data)
+    tauy_window = update(npx.zeros_like(vs.tauy), at[2:-2, 2:-2, :], tauy_data)
+    qnet_window = update(npx.zeros_like(vs.qnet), at[2:-2, 2:-2, :], qnet_data)
+    qsol_window = update(npx.zeros_like(vs.qsol), at[2:-2, 2:-2, :], qsol_data)
+    evap_window = update(npx.zeros_like(vs.evap), at[2:-2, 2:-2, :], evap_data)
+    tp_window = update(npx.zeros_like(vs.tp), at[2:-2, 2:-2, :], tp_data)
+
+    vs.taux = update(vs.taux, at[...], taux_window)
+    vs.tauy = update(vs.tauy, at[...], tauy_window)
+    vs.qnet = update(vs.qnet, at[...], qnet_window)
+    vs.qsol = update(vs.qsol, at[...], qsol_window)
+    vs.evap = update(vs.evap, at[...], evap_window)
+    vs.tp = update(vs.tp, at[...], tp_window)
+
+    surface_taux = f1 * taux_window[:, :, 0] + f2 * taux_window[:, :, 1]
+    surface_tauy = f1 * tauy_window[:, :, 0] + f2 * tauy_window[:, :, 1]
+    vs.surface_taux = update(vs.surface_taux, at[:, :], surface_taux)
+    vs.surface_tauy = update(vs.surface_tauy, at[:, :], surface_tauy)
 
     if settings.enable_tke:
         vs.forc_tke_surface = update(
@@ -646,13 +677,13 @@ def set_forcing_kernel(state):
             )** (3.0 / 2.0),
         )
 
-    qqnet = f1 * vs.qnet[..., 0] + f2 * vs.qnet[..., 1]
+    qqnet = f1 * qnet_window[:, :, 0] + f2 * qnet_window[:, :, 1]
     t_star_cur = f1_rest * vs.t_star[..., n1_rest] + f2_rest * vs.t_star[..., n2_rest]
-    vs.forc_temp_surface = (qqnet + dQdT * (vs.temp[..., -1,vs.tau] - t_star_cur))  * vs.maskT[..., -1] / cp_0 / settings.rho_0
-    evap_cur =  f1 * vs.evap[..., 0]+ f2 * vs.evap[..., 1]
-    tp_cur =  f1 * vs.tp[..., 0] + f2 * vs.tp[..., 1]
+    vs.forc_temp_surface = (qqnet + dQdT * 0*(vs.temp[..., -1,vs.tau] - t_star_cur))  * vs.maskT[..., -1] / cp_0 / settings.rho_0
+    evap_cur =  f1 * evap_window[:, :, 0] + f2 * evap_window[:, :, 1]
+    tp_cur =  f1 * tp_window[:, :, 0] + f2 * tp_window[:, :, 1]
     s_star_cur = f1_rest * vs.s_star[..., n1_rest] + f2_rest * vs.s_star[..., n2_rest]
-    vs.forc_salt_surface = (Ks*(vs.salt[...,-1,vs.tau]-s_star_cur) -(tp_cur - evap_cur) * vs.salt[..., -1,vs.tau]) * vs.maskT[..., -1]
+    vs.forc_salt_surface = (0*Ks*(vs.salt[...,-1,vs.tau]-s_star_cur) -(tp_cur - evap_cur) * vs.salt[..., -1,vs.tau]) * vs.maskT[..., -1]
 
     # apply simple ice mask
     mask1 = vs.temp[:, :, -1, vs.tau] * vs.maskT[:, :, -1] > -1.8
@@ -664,7 +695,7 @@ def set_forcing_kernel(state):
     # solar radiation
     if settings.enable_tempsalt_sources:
         vs.temp_source = (
-            (f1 * vs.qsol[..., 0, None] + f2 * vs.qsol[..., 1, None])
+            (f1 * qsol_window[:, :, 0, None] + f2 * qsol_window[:, :, 1, None])
             * vs.divpen_shortwave[None, None, :]
             * ice[..., None]
             * vs.maskT[..., :]
@@ -675,6 +706,12 @@ def set_forcing_kernel(state):
     return KernelOutput(
         surface_taux=vs.surface_taux,
         surface_tauy=vs.surface_tauy, 
+        taux=vs.taux,
+        tauy=vs.tauy,
+        qnet=vs.qnet,
+        qsol=vs.qsol,
+        evap=vs.evap,
+        tp=vs.tp,
         temp_source=vs.temp_source,
         forc_tke_surface=vs.forc_tke_surface,
         forc_temp_surface=vs.forc_temp_surface,
