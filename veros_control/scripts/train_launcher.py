@@ -24,7 +24,7 @@ def main():
         sample_steps=2,
         batch_size=1,
         restart_interval_steps=2,
-        grad_mode="manual_jvp",
+        grad_mode="manual_vjp",
         TS=False,
         keys_loss=("temp","salt"),
         lr=1e-3,
