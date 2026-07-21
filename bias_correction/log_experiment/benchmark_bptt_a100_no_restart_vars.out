@@ -1,0 +1,125 @@
+/scratch/so2495/code/OceanHybridModels/global_1_degree/
+Importing core modules
+ Using computational backend jax on gpu
+  Kernels are compiled during first iteration, be patient
+ Runtime settings are now locked
+
+Running on device: NVIDIA A100-SXM4-80GB (gpu, 1 device(s) visible)
+GPU tag for output files: NVIDIA_A100-SXM4-80GB_75GB
+############################### :  UNNAMED
+Running model setup
+FutureWarning: scatter inputs have incompatible types: cannot safely cast value from dtype=int64 to dtype=int32 with jax_numpy_dtype_promotion='standard'. In future JAX releases this will result in an error. (/scratch/so2495/conda-envs/veros-gpu-flax/lib/python3.12/site-packages/jax/_src/ops/scatter.py:93)
+Diffusion grid factor delta_iso1 = 0.0526904740552797
+simulation initialized
+['tau', 'taum1', 'taup1', 'itt', 'time', 'rho', 'int_drhodT', 'int_drhodS', 'Nsqr', 'Hd', 'dHd', 'temp', 'dtemp', 'salt', 'dsalt', 'u', 'v', 'w', 'du', 'dv', 'ssh', 'psi', 'K_diss_v', 'tke', 'dtke', 'eke', 'deke']
+No existing results file for this GPU/VRAM combo -> starting fresh: output_folder_sampled/ad_comparison_results_NVIDIA_A100-SXM4-80GB_75GB.pkl
+
+=== steps = 3 | chunk_sizes = (3,) ===
+  [Baseline] bytes_in_use=3,613,104,896  peak=4,243,494,656  live_arrays=128
+  [JVP] Compiling...
+  [JVP] Running...
+  -> jvp_diff_scanned : grad=-3.141864e-14 loss=2.350957e-06 time=63.9986s
+  [Post-JVP] bytes_in_use=3,613,104,896  peak=23,294,161,152  live_arrays=128
+  [VJP] Compiling...
+  [VJP] Running...
+  -> vjp_grad_chunked_Nlvls : grad=-3.151103e-14 loss=2.350957e-06 time=242.7155s
+  [Post-VJP] bytes_in_use=3,613,104,896  peak=37,800,265,472  live_arrays=128
+  [checkpoint] saved progress -> output_folder_sampled/ad_comparison_results_NVIDIA_A100-SXM4-80GB_75GB.pkl
+
+=== steps = 9 | chunk_sizes = (3, 3) ===
+  [Baseline] bytes_in_use=3,613,104,896  peak=37,800,265,472  live_arrays=128
+  [JVP] Compiling...
+  [JVP] Running...
+  -> jvp_diff_scanned : grad=-6.157234e-12 loss=7.893544e-05 time=65.9631s
+  [Post-JVP] bytes_in_use=3,613,104,896  peak=37,800,265,472  live_arrays=128
+  [VJP] Compiling...
+  [VJP] Running...
+  -> vjp_grad_chunked_Nlvls : grad=-6.164354e-12 loss=7.893544e-05 time=254.6246s
+  [Post-VJP] bytes_in_use=3,613,104,896  peak=37,800,265,472  live_arrays=128
+  [checkpoint] saved progress -> output_folder_sampled/ad_comparison_results_NVIDIA_A100-SXM4-80GB_75GB.pkl
+
+=== steps = 27 | chunk_sizes = (3, 3, 3) ===
+  [Baseline] bytes_in_use=3,613,104,896  peak=37,800,265,472  live_arrays=128
+  [JVP] Compiling...
+  [JVP] Running...
+  -> jvp_diff_scanned : grad=-4.787999e-10 loss=2.512912e-03 time=69.0694s
+  [Post-JVP] bytes_in_use=3,613,104,896  peak=37,800,265,472  live_arrays=128
+  [VJP] Compiling...
+  [VJP] Running...
+  -> vjp_grad_chunked_Nlvls : grad=-4.789194e-10 loss=2.512912e-03 time=323.1339s
+  [Post-VJP] bytes_in_use=3,613,104,896  peak=43,023,879,680  live_arrays=128
+  [checkpoint] saved progress -> output_folder_sampled/ad_comparison_results_NVIDIA_A100-SXM4-80GB_75GB.pkl
+
+=== steps = 81 | chunk_sizes = (3, 3, 3, 3) ===
+  [Baseline] bytes_in_use=3,613,104,896  peak=43,023,879,680  live_arrays=128
+  [JVP] Compiling...
+  [JVP] Running...
+  -> jvp_diff_scanned : grad=-1.482287e-08 loss=2.084626e-02 time=78.7258s
+  [Post-JVP] bytes_in_use=3,613,104,896  peak=43,023,879,680  live_arrays=128
+  [VJP] Compiling...
+  [VJP] Running...
+  -> vjp_grad_chunked_Nlvls : grad=-1.482053e-08 loss=2.084627e-02 time=391.1835s
+  [Post-VJP] bytes_in_use=3,613,104,896  peak=48,014,015,744  live_arrays=128
+  [checkpoint] saved progress -> output_folder_sampled/ad_comparison_results_NVIDIA_A100-SXM4-80GB_75GB.pkl
+
+=== steps = 243 | chunk_sizes = (3, 3, 3, 3, 3) ===
+  [Baseline] bytes_in_use=3,613,104,896  peak=48,014,015,744  live_arrays=128
+  [JVP] Compiling...
+  [JVP] Running...
+  -> jvp_diff_scanned : grad=-2.290625e-07 loss=1.144306e-01 time=108.3015s
+  [Post-JVP] bytes_in_use=3,613,104,896  peak=48,014,015,744  live_arrays=128
+  [VJP] Compiling...
+  [VJP] Running...
+  -> vjp_grad_chunked_Nlvls : grad=-2.290378e-07 loss=1.144308e-01 time=587.8490s
+  [Post-VJP] bytes_in_use=3,613,104,896  peak=53,004,157,184  live_arrays=128
+  [checkpoint] saved progress -> output_folder_sampled/ad_comparison_results_NVIDIA_A100-SXM4-80GB_75GB.pkl
+
+=== steps = 729 | chunk_sizes = (3, 3, 3, 3, 3, 3) ===
+  [Baseline] bytes_in_use=3,613,104,896  peak=53,004,157,184  live_arrays=128
+  [JVP] Compiling...
+  [JVP] Running...
+  -> jvp_diff_scanned : grad=-1.497546e-06 loss=4.127759e-01 time=195.7818s
+  [Post-JVP] bytes_in_use=3,613,104,896  peak=53,004,157,184  live_arrays=128
+  [VJP] Compiling...
+  [VJP] Running...
+  -> vjp_grad_chunked_Nlvls : grad=-1.497713e-06 loss=4.127758e-01 time=903.4744s
+  [Post-VJP] bytes_in_use=3,613,104,896  peak=57,994,307,840  live_arrays=128
+  [checkpoint] saved progress -> output_folder_sampled/ad_comparison_results_NVIDIA_A100-SXM4-80GB_75GB.pkl
+
+=== steps = 2187 | chunk_sizes = (3, 3, 3, 3, 3, 3, 3) ===
+  [Baseline] bytes_in_use=3,613,104,896  peak=57,994,307,840  live_arrays=128
+  [JVP] Compiling...
+  [JVP] Running...
+  -> jvp_diff_scanned : grad=-5.309626e-06 loss=1.152636e+00 time=452.1006s
+  [Post-JVP] bytes_in_use=3,613,104,896  peak=57,994,307,840  live_arrays=128
+  [VJP] Compiling...
+  [VJP] Running...
+  -> vjp_grad_chunked_Nlvls : grad=5.324308e-04 loss=1.152636e+00 time=1935.6008s
+  [Post-VJP] bytes_in_use=3,613,104,896  peak=62,984,479,744  live_arrays=128
+  [checkpoint] saved progress -> output_folder_sampled/ad_comparison_results_NVIDIA_A100-SXM4-80GB_75GB.pkl
+
+=== steps = 6561 | chunk_sizes = (3, 3, 3, 3, 3, 3, 3, 3) ===
+  [Baseline] bytes_in_use=3,613,104,896  peak=62,984,479,744  live_arrays=128
+  [JVP] Compiling...
+  [JVP] Running...
+  -> jvp_diff_scanned : grad=2.449469e+50 loss=3.151441e+00 time=1264.9786s
+  [Post-JVP] bytes_in_use=3,613,104,896  peak=62,984,479,744  live_arrays=128
+  [VJP] Compiling...
+  [VJP] Running...
+  -> vjp_grad_chunked_Nlvls : grad=2.055361e+68 loss=3.151442e+00 time=5267.2470s
+  [Post-VJP] bytes_in_use=3,613,104,896  peak=67,974,725,632  live_arrays=128
+  [checkpoint] saved progress -> output_folder_sampled/ad_comparison_results_NVIDIA_A100-SXM4-80GB_75GB.pkl
+  [checkpoint] saved progress -> output_folder_sampled/ad_comparison_results_NVIDIA_A100-SXM4-80GB_75GB.pkl
+Saved benchmark results to output_folder_sampled/ad_comparison_results_NVIDIA_A100-SXM4-80GB_75GB.pkl
+
+Saved figure to output_folder_sampled/ad_comparison_NVIDIA_A100-SXM4-80GB_75GB.png
+
+=== Summary ===
+steps=    3 | grad_jvp=-3.1419e-14 grad_vjp=-3.1511e-14 grad_err%=0.2941 | loss_jvp=2.3510e-06 loss_vjp=2.3510e-06 loss_err%=0.0000 | t_jvp=64.00s t_vjp=242.72s
+steps=    9 | grad_jvp=-6.1572e-12 grad_vjp=-6.1644e-12 grad_err%=0.1156 | loss_jvp=7.8935e-05 loss_vjp=7.8935e-05 loss_err%=0.0000 | t_jvp=65.96s t_vjp=254.62s
+steps=   27 | grad_jvp=-4.7880e-10 grad_vjp=-4.7892e-10 grad_err%=0.0250 | loss_jvp=2.5129e-03 loss_vjp=2.5129e-03 loss_err%=0.0000 | t_jvp=69.07s t_vjp=323.13s
+steps=   81 | grad_jvp=-1.4823e-08 grad_vjp=-1.4821e-08 grad_err%=0.0158 | loss_jvp=2.0846e-02 loss_vjp=2.0846e-02 loss_err%=0.0000 | t_jvp=78.73s t_vjp=391.18s
+steps=  243 | grad_jvp=-2.2906e-07 grad_vjp=-2.2904e-07 grad_err%=0.0108 | loss_jvp=1.1443e-01 loss_vjp=1.1443e-01 loss_err%=0.0002 | t_jvp=108.30s t_vjp=587.85s
+steps=  729 | grad_jvp=-1.4975e-06 grad_vjp=-1.4977e-06 grad_err%=0.0112 | loss_jvp=4.1278e-01 loss_vjp=4.1278e-01 loss_err%=0.0000 | t_jvp=195.78s t_vjp=903.47s
+steps= 2187 | grad_jvp=-5.3096e-06 grad_vjp=5.3243e-04 grad_err%=10127.6512 | loss_jvp=1.1526e+00 loss_vjp=1.1526e+00 loss_err%=0.0000 | t_jvp=452.10s t_vjp=1935.60s
+steps= 6561 | grad_jvp=2.4495e+50 grad_vjp=2.0554e+68 grad_err%=83910456630919053312.0000 | loss_jvp=3.1514e+00 loss_vjp=3.1514e+00 loss_err%=0.0001 | t_jvp=1264.98s t_vjp=5267.25s

@@ -1,0 +1,12 @@
+/scratch/so2495/code/OceanHybridModels/global_1_degree/
+Importing core modules
+ Using computational backend jax on gpu
+  Kernels are compiled during first iteration, be patient
+ Runtime settings are now locked
+
+Running on device: NVIDIA H100 NVL (gpu, 1 device(s) visible)
+GPU tag for output files: NVIDIA_H100_NVL_88GB
+############################### :  UNNAMED
+Running model setup
+FutureWarning: scatter inputs have incompatible types: cannot safely cast value from dtype=int64 to dtype=int32 with jax_numpy_dtype_promotion='standard'. In future JAX releases this will result in an error. (/scratch/so2495/conda-envs/veros-gpu-flax/lib/python3.12/site-packages/jax/_src/ops/scatter.py:93)
+Diffusion grid factor delta_iso1 = 0.0526904740552797

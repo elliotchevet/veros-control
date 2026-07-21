@@ -1,0 +1,11 @@
+0it [00:00, ?it/s]0it [00:00, ?it/s]
+2026-07-19 01:01:34.047303: E external/xla/xla/service/slow_operation_alarm.cc:73] 
+********************************
+[Compiling module jit_scan] Very slow compile? If you want to file a bug, run with envvar XLA_FLAGS=--xla_dump_to=/tmp/foo and attach the results.
+********************************
+2026-07-19 01:53:48.259188: E external/xla/xla/service/slow_operation_alarm.cc:140] The operation took 54m14.247583907s
+
+********************************
+[Compiling module jit_scan] Very slow compile? If you want to file a bug, run with envvar XLA_FLAGS=--xla_dump_to=/tmp/foo and attach the results.
+********************************
+slurmstepd: error: *** JOB 16761349 ON cn003 CANCELLED AT 2026-07-19T04:00:20 ***
