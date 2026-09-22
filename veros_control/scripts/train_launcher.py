@@ -17,21 +17,21 @@ def main():
 
     config = TrainConfig(
         output_file='/Odyssey/private/e25cheve/control/veros_control/checkpoints/checkpoint.pkl',
-        hidden_dim=1,
-        depth=60,
         epochs=1,
-        n_steps=2,
-        sample_steps=2,
+        initialization_mode="glorys",
+        epsilon=1e-9,
+        n_steps=3,
+        sample_steps=3,
         batch_size=1,
-        restart_interval_steps=2,
-        grad_mode="manual_vjp",
-        TS=False,
-        keys_loss=("temp","salt"),
-        lr=1e-3,
-        control_mode="r_bot",
-        restart_files=glob.glob(
-        '/Odyssey/private/e25cheve/simu_veros/runs/ground_truth/restarts/*.h5'
-    )
+        grad_mode="chunked_vjp",
+        TS=True,
+        keys_loss=("temp",),
+        lr=1e-9,
+        control_mode="nn",
+        train_delay_days=0.0,
+        glorys_files=sorted(glob.glob(
+        '/Odyssey/private/e25cheve/veros/veros_assets/global_1deg_realistic/glorys12_initial_conditions_40*'
+    ))
     )
 
     train(sim, config)

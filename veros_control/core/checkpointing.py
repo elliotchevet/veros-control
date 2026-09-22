@@ -35,10 +35,12 @@ def checkpoint_model_kwargs(checkpoint, defaults):
         "epsilon": "init_eps",
         "train_epsilon": "train_epsilon",
         "use_lon_lat": "use_lon_lat",
+        "use_forcings": "use_forcings",
         "conservative_mixing": "conservative_mixing",
         "use_one_hot": "use_one_hot",
         "num_mlps": "num_mlps",
         "TS": "TS",
+        "zero_output_init": "zero_output_init",
     }
 
     for checkpoint_key, model_key in key_map.items():
@@ -46,3 +48,4 @@ def checkpoint_model_kwargs(checkpoint, defaults):
             kwargs[model_key] = checkpoint[checkpoint_key]
 
     return kwargs
+

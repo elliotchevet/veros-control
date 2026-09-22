@@ -1,9 +1,35 @@
+import os
+import sys
+
+
+def _truthy_env(name):
+    return os.environ.get(name, "").lower() in ("1", "true", "yes", "on")
+
+
+def _diskless_mode_requested():
+    return (
+        "--diskless-mode" in sys.argv
+        or _truthy_env("VEROS_CONTROL_DISKLESS_MODE")
+        or _truthy_env("VEROS_DISKLESS_MODE")
+    )
+
+
 try:
-    import veros  
+    import veros
 except ImportError:
     raise RuntimeError(
         'Plugin needs Veros to be installed (try `pip install veros`)'
     )
+
+
+if _diskless_mode_requested():
+    from veros import runtime_settings
+
+    try:
+        setattr(runtime_settings, "diskless_mode", True)
+    except RuntimeError as exc:
+        if getattr(runtime_settings, "diskless_mode") is not True:
+            raise exc
 
 __version__ ="0.1.0" 
 
@@ -20,3 +46,4 @@ __VEROS_INTERFACE__ = dict(
     settings = SETTINGS,
     variables = VARIABLES,
 )
+

@@ -19,10 +19,12 @@ SETTINGS = {
     "scaling_method_features": Setting("minmax",str,"scaling method for features"),
     #"scaling_method_loss": Setting("minmax",str, "scaling methos for loss"),
     "use_lon_lat": Setting(False, bool,"use longitude and latitude as inputs of the MLP"),
+    "use_forcings": Setting(False, bool,"use physical forcing fields as inputs of the MLP"),
     "conservative_mixing": Setting(False, bool,"constrain vertical correction to conserve column integral"),
     "use_one_hot": Setting(False, bool, "if True, add one hot layer"),
     "seed": Setting(0, int, "random seed"),
     "num_mlps": Setting(1,int,"Number of MLPs to use: 1, 2 or 4"),
+    "nn_chunk_size": Setting(0, int, "Number of horizontal profiles per NN chunk; 0 disables chunking"),
     #"loss_type": Setting("zonal_mean", str,"Type of loss function to use. Options: 'zonal_mean' or 'pointwise'. Default: 'pointwise'"),
     "TS": Setting(False, bool,"If set, use only T,S as inputs but still predict T,S,U,V"),
     #"reweight_loss": Setting(True, bool,"if True, reweight loss"),
@@ -31,3 +33,4 @@ SETTINGS = {
     #"resume_checkpoint_path": Setting("",str, "Resume training from existing checkpoint with path"),
     #"overwrite_training": Setting(False, bool, "refresh training")
     }
+

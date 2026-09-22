@@ -1,11 +1,30 @@
 from veros.core.operators import numpy as npx, update, at
 from flax import linen as nn
 
+
 def raw_epsilon_init(target_eps: float) -> float:
     if target_eps <= 0:
         raise ValueError("target_eps must be positive")
 
     return npx.log(npx.expm1(target_eps))
+
+
+def encode_lon_lat_sincos(lon_lat):
+    lon = lon_lat[0]
+    lat = lon_lat[1]
+    radians_per_degree = 3.141592653589793 / 180.0
+    lon_rad = lon * radians_per_degree
+    lat_rad = lat * radians_per_degree
+    return npx.stack(
+        [
+            npx.sin(lon_rad),
+            npx.cos(lon_rad),
+            npx.sin(lat_rad),
+            npx.cos(lat_rad),
+        ],
+        axis=0,
+    )
+
 
 class VerticalCorrectionMLP(nn.Module):
     hidden_dim: int = 64
@@ -19,30 +38,37 @@ class VerticalCorrectionMLP(nn.Module):
     use_one_hot: bool = False
     num_mlps: int = 1                     # allowed: 1, 2, or 4
     TS: bool = False                      # if True: use only T,S as input
+    use_forcings: bool = False
+    zero_output_init: bool = False
 
     @nn.compact
     def __call__(self, x, lon_lat=None, dz=None):
         """
-        x: array with shape (nz, 4) = vertical profiles [T,S,U,V]
-        lon_lat: optional array with shape (2,4)
+        x: array with shape (nz, n_features), first channels are [T,S,U,V]
+        lon_lat: optional array with shape (2,4), encoded as sin/cos features when used
         dz: array of vertical layer thickness, shape (nz,)
         returns: array with shape (nz, 4)  # corrections for T,S,U,V
         """
 
-        if x.shape[-1] != 4:
-            raise ValueError(f"x must have shape (nz,4), got {x.shape}")
+        if x.shape[-1] < 4:
+            raise ValueError(f"x must have at least 4 channels [T,S,U,V], got {x.shape}")
+        if self.use_forcings and x.shape[-1] == 4:
+            raise ValueError("use_forcings=True requires forcing channels after [T,S,U,V]")
+
+        state_features = x[:, :4]
+        forcing_features = x[:, 4:] if self.use_forcings else x[:, 4:4]
 
         # -------- Inputs vs Outputs --------
         if self.TS:
-            # use only T,S as input
-            x_in = x[:, :2]
+            # use only T,S from the state, plus any requested extra inputs
+            x_in = npx.concatenate([state_features[:, :2], forcing_features], axis=-1)
             if lon_lat is not None:
                 lon_lat = lon_lat[:, :2]
             nb_outputs = 4
             if self.num_mlps not in (1, 4):
                 raise ValueError("When TS=True, num_mlps must be 1 or 4")
         else:
-            x_in = x
+            x_in = npx.concatenate([state_features, forcing_features], axis=-1)
             nb_outputs = self.nb_profiles
             if self.num_mlps not in (1, 2, 4):
                 raise ValueError("num_mlps must be 1, 2, or 4 when TS=False")
@@ -66,11 +92,11 @@ class VerticalCorrectionMLP(nn.Module):
             # input: always from x_in (T,S if TS=True; else all 4)
             x_group = x_in.reshape(-1)
 
-            # add lon/lat if requested
+            # add periodic lon/lat features if requested
             if self.use_lon_lat:
                 if lon_lat is None:
                     raise ValueError("lon_lat must be provided when use_lon_lat=True")
-                coords_group = lon_lat.reshape(-1)
+                coords_group = encode_lon_lat_sincos(lon_lat).reshape(-1)
                 x_group = npx.concatenate([x_group, coords_group], axis=0)
 
             # add one-hot encoding if requested (not for 4 MLPs)
@@ -86,7 +112,13 @@ class VerticalCorrectionMLP(nn.Module):
 
             # output layer -> vertical corrections for this group
             out_dim = self.nz * len(group)
-            x_group = nn.Dense(out_dim)(x_group)
+            output_init = {}
+            if self.zero_output_init:
+                output_init = {
+                    "kernel_init": nn.initializers.zeros,
+                    "bias_init": nn.initializers.zeros,
+                }
+            x_group = nn.Dense(out_dim, **output_init)(x_group)
             x_group = x_group.reshape(self.nz, len(group))
 
             # epsilon scaling

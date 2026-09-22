@@ -22,7 +22,7 @@ Operating System :: MacOS
 """
 
 INSTALL_REQUIRES = [
-    "veros>=1.6"
+#    "veros>=1.6"
 ]
 
 with open(os.path.join(here, "README.md"), encoding="utf-8") as f:

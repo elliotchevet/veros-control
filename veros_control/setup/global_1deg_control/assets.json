@@ -7,7 +7,7 @@
     "url": "/Odyssey/private/e25cheve/veros/veros_assets/global_1deg_control/ERA5_1deg_1986_Flux_processed.nc"
   },
   "ic_glorys12": {
-    "url": "/Odyssey/private/e25cheve/veros/veros_assets/global_1deg_control/glorys12_initial_conditions.nc"
+    "url": "/Odyssey/private/e25cheve/veros/veros_assets/global_1deg_control/glorys12_initial_conditions_40_199301.nc"
   },
   "ic_veros": {
     "url": "/Odyssey/private/e25cheve/veros/veros_assets/global_1deg_control/global_1deg_realistic.snapshot.nc"
@@ -16,6 +16,6 @@
     "url": "/Odyssey/private/e25cheve/veros/veros_assets/global_1deg_control/glorys12_restoring.nc"
   },
   "mask": {
-    "url": "/Odyssey/private/e25cheve/veros/veros_assets/global_1deg_control/masks.nc"
+    "url": "/Odyssey/private/e25cheve/veros/veros_assets/global_1deg_control/masks_40.nc"
   }
 }
