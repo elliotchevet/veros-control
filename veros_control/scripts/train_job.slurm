@@ -4,52 +4,49 @@
 #SBATCH --qos=high
 #SBATCH --job-name=control
 #SBATCH --gres=gpu:h100
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=96G
+#SBATCH --time=06:00:00
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=elliot.chevet@imt-atlantique.fr
 
-# load module dependencies
-# module load petsc4py mpi4py h5py ...
-
+set -euo pipefail
+cd /Odyssey/private/e25cheve/control/veros_control/scripts
 
 export OMP_NUM_THREADS=1
 export VEROS_ASSET_DIR=/Odyssey/private/e25cheve/veros/veros_assets
-export HOME=/Odyssey/private/e25cheve/
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
-export TF_GPU_ALLOCATOR=cuda_malloc_async
-export JAX_TRACEBACK_FILTERING=off
 export XLA_PYTHON_CLIENT_ALLOCATOR=platform
 export JAX_ENABLE_X64=1
-
-source /Odyssey/private/e25cheve/miniconda3/etc/profile.d/conda.sh
-conda activate /Odyssey/private/e25cheve/miniconda3/envs/veros
-
-export GPU_LOG=/Odyssey/private/e25cheve/gpu_mem_${SLURM_JOB_ID}.log
 export PYTHONUNBUFFERED=1
+export PYTHONDONTWRITEBYTECODE=1
+export JAX_TRACEBACK_FILTERING=off
+
+export SOURCE_CHECKPOINT="/Odyssey/private/e25cheve/control/veros_control/scripts/basin_training/job_55071/train.pkl"
+export TRAIN_OUTPUT_DIR="$PWD/basin_training/job_${SLURM_JOB_ID}"
+mkdir -p "$TRAIN_OUTPUT_DIR"/{tmp,cache,cuda_cache,matplotlib}
+export TMPDIR="$TRAIN_OUTPUT_DIR/tmp"
+export XDG_CACHE_HOME="$TRAIN_OUTPUT_DIR/cache"
+export CUDA_CACHE_PATH="$TRAIN_OUTPUT_DIR/cuda_cache"
+export MPLCONFIGDIR="$TRAIN_OUTPUT_DIR/matplotlib"
+export GPU_LOG="$TRAIN_OUTPUT_DIR/gpu_memory.log"
 
 (
   while true; do
     date
     nvidia-smi --query-gpu=index,name,memory.total,memory.used,memory.free --format=csv
-    echo "---"
-    sleep 0.5
+    sleep 5
   done
 ) > "$GPU_LOG" 2>&1 &
-
-python - <<'PY'
-import jax
-import jax.numpy as jnp
-
-print("jax_enable_x64:", jax.config.jax_enable_x64)
-print("float default:", jnp.asarray(1.0).dtype)
-print("float64 requested:", jnp.asarray(1.0, dtype=jnp.float64).dtype)
-PY
-
 GPU_MONITOR_PID=$!
-python ../training/ad_benchmark_root.py \
+trap 'kill "$GPU_MONITOR_PID" 2>/dev/null || true' EXIT
+
+/Odyssey/private/e25cheve/miniconda3/envs/veros/bin/python -B split_epsilon/continue_training.py \
+  --total-updates 100 \
   --run-mode train \
   --control-mode nn_param \
   --method-pair vjp-only \
-  --sample-steps 27 \
+  --sample-steps 1 \
   --glorys-file '/Odyssey/private/e25cheve/veros/veros_assets/global_1deg_realistic/glorys12_initial_conditions_40_*.nc' \
   --glorys-index 0 \
   --glorys-month-index 0 \
@@ -58,17 +55,19 @@ python ../training/ad_benchmark_root.py \
   --glorys-linear-interpolation \
   --loss-reduction mean \
   --keys-loss temp salt \
-  --epsilon 1e-6 \
+  --momentum-epsilon 1e-7 \
+  --tracer-epsilon 1e-6 \
   --train-n-steps 27 \
-  --train-updates 20 \
+  --train-updates 65 \
   --train-lr 5e-3 \
   --feature-stats-file /Odyssey/private/e25cheve/control/veros_control/checkpoints/glorys_feature_stats_meanstd.pkl \
   --use-lon-lat \
   --use-forcings \
   --balance-loss-terms \
-  --diskless-mode
-#  --nn-checkpoint '/Odyssey/private/e25cheve/control/veros_control/scripts/output_folder_nn_param_glorys_target_mean/ad_comparison_nn_param_glorys_target_mean_param_l0_i0_vjp_only_curriculum_train_NVIDIA_A100-SXM4-80GB.pkl' \
-#  --train-output-file '/Odyssey/private/e25cheve/control/veros_control/scripts/output_folder_nn_param_glorys_target_mean/ad_comparison_nn_param_glorys_target_mean_param_l0_i0_vjp_only_curriculum_train_NVIDIA_A100-SXM4-80GB.pkl'  
-#srun python train_launcher.py \
-
-kill "$GPU_MONITOR_PID"
+  --bound-corrections \
+  --validate-candidates \
+  --basin-mean-loss \
+  --basin-levels 5 \
+  --diskless-mode \
+  --output-folder "$TRAIN_OUTPUT_DIR" \
+  --train-output-file "$TRAIN_OUTPUT_DIR/train.pkl"
