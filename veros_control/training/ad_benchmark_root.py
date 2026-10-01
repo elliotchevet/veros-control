@@ -391,6 +391,9 @@ def parse_args():
     )
     parser.set_defaults(freeze_vars=True)
 
+    parser.add_argument('--basin-mean-loss', action='store_true', help='Compare area-weighted T/S means separately for each of six basins and shallow level')
+    parser.add_argument('--basin-pattern-lambda', type=float, default=0., help='Weight of within-basin error variance; 0=mean bias, 1=pointwise MSE')
+    parser.add_argument('--basin-levels', type=int, choices=(5, 10), default=5, help='Number of shallowest levels for basin means (default 5)')
     args = parser.parse_args()
     args.keys_loss = tuple(args.keys_loss)
     return args
@@ -491,6 +494,16 @@ def make_root_loss_functions(args, simulation, target_file=None, initial_file=No
                 key: initial_target[key] * (1.0 - alpha) + target[key] * alpha
                 for key in loss_keys
             }
+
+        if getattr(args, "basin_mean_loss", False):
+            from veros_control.training.basin_loss import make_basin_loss
+            scalar, names, terms, metadata = make_basin_loss(
+                simulation.state.variables, target, loss_keys, args.basin_levels,
+                pattern_lambda=getattr(args, "basin_pattern_lambda", 0.),
+            )
+            args.basin_loss_metadata = metadata
+            print(f"Basin means: {metadata['names']}; depths (m): {metadata['depths_m']}")
+            return scalar, names, terms
 
         def loss_function(state):
             return compute_loss(
@@ -916,6 +929,10 @@ def _train_checkpoint_payload(
         "loss_mode": args.loss_mode,
         "loss_reduction": args.loss_reduction,
         "keys_loss": list(args.keys_loss),
+        "basin_pattern_lambda": getattr(args, "basin_pattern_lambda", 0.),
+        "basin_mean_loss": getattr(args, "basin_mean_loss", False),
+        "basin_levels": getattr(args, "basin_levels", 5) if getattr(args, "basin_mean_loss", False) else None,
+        "basin_loss_metadata": getattr(args, "basin_loss_metadata", None),
         "restart_file": restart_file,
         "glorys_file": glorys_file,
         "glorys_target_file": glorys_target_file,
@@ -955,6 +972,11 @@ def _load_or_init_train_state(args, checkpoint_path, params, optimizer):
         checkpoint = load_checkpoint(checkpoint_path)
 
     if checkpoint is not None and "params" in checkpoint:
+        if checkpoint.get("basin_pattern_lambda", 0.) != getattr(args, "basin_pattern_lambda", 0.):
+            raise ValueError("Checkpoint basin pattern weight differs; start a fresh objective")
+        basin_enabled = getattr(args, "basin_mean_loss", False)
+        if checkpoint.get("basin_mean_loss", False) != basin_enabled or (basin_enabled and checkpoint.get("basin_levels") != args.basin_levels):
+            raise ValueError("Checkpoint basin objective differs; start a separate training output (optionally initialize NN weights with --nn-checkpoint)")
         if (
             checkpoint.get("glorys_linear_interpolation", False) != args.glorys_linear_interpolation
             or (
@@ -1227,6 +1249,14 @@ def run_train_mode(
         loss_term_count=len(loss_term_names),
     )
 
+    candidate_validator = getattr(args, "candidate_validator", None)
+    lr_backoff = getattr(args, "lr_backoff", 1.0)
+    if candidate_validator is not None:
+        valid, diagnostic = candidate_validator(params)
+        print(f"Initial rollout validation: valid={valid}: {diagnostic}")
+        if not valid:
+            raise FloatingPointError("Starting checkpoint rollout is invalid under the requested corrections; no optimizer step attempted")
+
     final_update = start_update + args.train_updates
     if args.balance_loss_terms:
         if not loss_term_names or args.sample_steps > train_n_steps:
@@ -1273,12 +1303,27 @@ def run_train_mode(
         grad_time = time.time() - start_time
 
         current_lr = _train_lr_for_update(args, update_idx, start_update, final_update)
-        raw_updates, opt_state = optimizer.update(grads, opt_state, params)
-        updates = jax.tree_util.tree_map(
-            lambda update: _scale_update(update, current_lr),
-            raw_updates,
-        )
-        params_after_update = optax.apply_updates(params, updates)
+        if candidate_validator is not None and not _tree_stats(grads)["finite"]:
+            raise FloatingPointError("Nonfinite gradient at current parameters; reducing the candidate learning rate cannot repair this gradient")
+        raw_updates, candidate_opt_state = optimizer.update(grads, opt_state, params)
+        candidate_retries = 0
+        candidate_report = None
+        if candidate_validator is not None:
+            if not _tree_stats(candidate_opt_state)["finite"]:
+                raise FloatingPointError("Nonfinite candidate Adam state; previous optimizer state preserved")
+            from veros_control.training.stability import backtrack_candidate
+            scheduled_lr = current_lr
+            params_after_update, updates, current_lr, candidate_retries, candidate_report = backtrack_candidate(
+                params, raw_updates, scheduled_lr * lr_backoff, candidate_validator,
+                max_retries=getattr(args, "candidate_max_retries", 8),
+            )
+            lr_backoff *= 0.5 ** candidate_retries
+            args.lr_backoff = lr_backoff
+        else:
+            updates = jax.tree_util.tree_map(
+                lambda update: _scale_update(update, current_lr), raw_updates,
+            )
+            params_after_update = optax.apply_updates(params, updates)
         jax.block_until_ready((updates, params_after_update))
 
         loss_value = float(loss)
@@ -1347,6 +1392,7 @@ def run_train_mode(
             )
 
         params = params_after_update
+        opt_state = candidate_opt_state
         history.append(
             {
                 "update": update_idx + 1,
@@ -1361,6 +1407,8 @@ def run_train_mode(
                 "param_norm": param_stats["norm"],
                 "param_max_abs": param_stats["max_abs"],
                 "selected_grad": selected_grad,
+                **({"candidate_retries": candidate_retries, "candidate_validation": candidate_report,
+                    "lr_backoff": lr_backoff} if candidate_validator is not None else {}),
                 "loss_terms": loss_term_values,
                 **({"normalized_loss_terms": normalized_loss_terms} if args.balance_loss_terms else {}),
                 "tendency_ratio_rms": {
@@ -1414,6 +1462,12 @@ def run_train_mode(
 
 def main():
     args = parse_args()
+    if not np.isfinite(args.basin_pattern_lambda) or args.basin_pattern_lambda < 0:
+        raise ValueError('Basin pattern lambda must be finite and nonnegative')
+    if args.basin_pattern_lambda and not args.basin_mean_loss:
+        raise ValueError('--basin-pattern-lambda requires --basin-mean-loss')
+    if args.basin_mean_loss and (args.loss_mode != "glorys_target" or any(k not in ('temp', 'salt') for k in args.keys_loss)):
+        raise ValueError('--basin-mean-loss requires GLORYS targets and temp/salt loss keys')
     if args.balance_loss_terms and (args.run_mode != "train" or args.loss_mode != "glorys_target"):
         raise ValueError("--balance-loss-terms requires --run-mode train --loss-mode glorys_target")
     if args.balance_loss_terms and (args.sample_steps <= 0 or len(set(args.keys_loss)) != len(args.keys_loss)):
@@ -1449,6 +1503,8 @@ def main():
     if args.glorys_linear_interpolation:
         interpolation_steps = round(args.glorys_interpolation_alpha * 720)
         output_loss_suffix += f"_lininterp{interpolation_steps}of720"
+    if args.basin_mean_loss:
+        output_loss_suffix += f"_basin_top{args.basin_levels}"
     if args.balance_loss_terms:
         output_loss_suffix += "_balanced"
     output_reduction_suffix = "_mean" if args.loss_reduction == "mean" else ""
@@ -1807,6 +1863,10 @@ def main():
         results["loss_mode"] = args.loss_mode
         results["loss_reduction"] = args.loss_reduction
         results["keys_loss"] = list(args.keys_loss)
+        results["basin_pattern_lambda"] = args.basin_pattern_lambda
+        results["basin_mean_loss"] = args.basin_mean_loss
+        results["basin_levels"] = args.basin_levels if args.basin_mean_loss else None
+        results["basin_loss_metadata"] = getattr(args, "basin_loss_metadata", None)
         results["save_sample_trajectories"] = args.save_sample_trajectories
         results["trajectory_folder"] = args.trajectory_folder
         save_results(results, pkl_path)
