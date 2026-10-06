@@ -1,0 +1,38 @@
+{
+  "output": "../outputs/training/example",
+  "setup": "global_ocean/setup.py:create_simulation",
+  "initial": "../data/glorys_initial.nc",
+  "target": "../data/glorys_next.nc",
+  "n_steps": 243,
+  "sample_steps": 27,
+  "updates": 80,
+  "learning_rate": 0.0005,
+  "reference_hours": 720,
+  "normalization": "none",
+  "model": {
+    "hidden_dim": 64,
+    "depth": 2,
+    "use_lon_lat": true,
+    "use_forcings": true,
+    "zero_output_init": true
+  },
+  "correction": {
+    "tracer_epsilon": 1e-06,
+    "momentum_epsilon": 1e-07,
+    "momentum": true,
+    "bounds_per_hour": [
+      0.05,
+      0.05,
+      0.005,
+      0.005
+    ],
+    "depth_taper": null
+  },
+  "loss": {
+    "mode": "basin",
+    "levels": 0,
+    "pattern_lambda": 1,
+    "balance": true,
+    "interpolation": "sampled"
+  }
+}

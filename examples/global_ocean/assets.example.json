@@ -1,0 +1,8 @@
+{
+  "forcing_default": "/path/to/forcing_default.nc",
+  "forcing_era5": "/path/to/forcing_era5.nc",
+  "ic_glorys12": "/path/to/ic_glorys12.nc",
+  "ic_veros": "/path/to/ic_veros.nc",
+  "restoring_glorys12": "/path/to/restoring_glorys12.nc",
+  "mask": "/path/to/mask.nc"
+}

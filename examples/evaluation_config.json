@@ -1,0 +1,18 @@
+{
+  "setup": "global_ocean/setup.py:create_simulation",
+  "initial": "../data/glorys_initial.nc",
+  "target": "../data/glorys_next.nc",
+  "reference_hours": 720,
+  "output": "../outputs/evaluation/example",
+  "checkpoint": "../outputs/training/example/best.pkl",
+  "n_steps": 720,
+  "snapshot_every": 24,
+  "baseline": true,
+  "loss": {
+    "mode": "basin",
+    "levels": 0,
+    "pattern_lambda": 1,
+    "balance": true,
+    "interpolation": "sampled"
+  }
+}

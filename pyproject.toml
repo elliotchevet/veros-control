@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "veros-control"
+version = "0.2.0"
+description = "Train and apply column-wise neural corrections in Veros"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["veros", "jax", "flax", "optax", "numpy", "scipy", "h5netcdf", "matplotlib"]
+
+[project.scripts]
+veros-control-train = "veros_control.training.train:main"
+veros-control-evaluate = "veros_control.evaluation.infer:main"
+
+[tool.setuptools.packages.find]
+include = ["veros_control*"]
