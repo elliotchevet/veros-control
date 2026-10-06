@@ -59,3 +59,9 @@ Nested checkpointing, split epsilon, bounds and candidate validation are unchang
 `--glorys-sampled-interpolation` opts into a target interpolated at each sampled model time: alpha = (time - initial_time)/(720 * dt_tracer). It requires `--basin-mean-loss --glorys-linear-interpolation`; without this flag the previous fixed-endpoint target remains unchanged. The interpolation mode is saved and checked when resuming.
 
 `train_sampled243_alllevels_job.slurm` starts fresh parameters (random hidden layers, zero output layer), optimizer and loss normalization. It averages nine losses at steps 27, 54, ..., 243 with lambda 1 and all 40 levels, for 80 updates. Split epsilons, smooth bounds, candidate validation and nested checkpointing remain enabled. No previous weights are loaded.
+
+## Best and latest training states
+
+`--train-keep-best` scores the initial state and each accepted post-update state using the unchanged sampled training objective. It saves `train.pkl` (latest) and `train.best.pkl` (lowest evaluated loss), each with matching parameters, optimizer state, update number, normalization and explicit `checkpoint_loss`. Existing history `loss` remains pre-update; `post_update_loss` records the new evaluation. Writes are atomic, using temporary files in the output directory. When best and latest coincide they share a hard link; later latest saves cannot overwrite the retained best. The best payload is retained in host-side process state and restored from its sidecar when continuing. The split-epsilon continuation runner also copies an available source best checkpoint. This preserves the best result but does not reject finite, physically admissible updates just because their loss increases.
+
+`train_sampled243_best_lr_job.slurm` resumes job 58653 at update 80 for 20 updates, preserving its optimizer and loss denominators. Base LR 0.001 with saved backoff 0.5 gives effective LR 0.0005.

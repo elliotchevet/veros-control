@@ -395,6 +395,7 @@ def parse_args():
     parser.add_argument('--basin-pattern-lambda', type=float, default=0., help='Weight of within-basin error variance; 0=mean bias, 1=pointwise MSE')
     parser.add_argument('--basin-levels', type=int, default=5, help='Number of shallowest basin-loss levels; 0 selects all (default 5)')
     parser.add_argument('--glorys-sampled-interpolation', action='store_true', help='For basin loss, interpolate GLORYS at each sampled model time instead of the fixed endpoint')
+    parser.add_argument('--train-keep-best', action='store_true', help='Evaluate and atomically save latest and best parameters with matching optimizer state after every update')
     args = parser.parse_args()
     args.keys_loss = tuple(args.keys_loss)
     return args
@@ -905,6 +906,7 @@ def _train_checkpoint_payload(
         "losses": [item["loss"] for item in history],
         "update": update_index,
         "train_mode": "ad_benchmark_root",
+        "train_keep_best": getattr(args, "train_keep_best", False),
         "run_mode": args.run_mode,
         "gpu_name": gpu_name,
         "gpu_tag": gpu_tag,
@@ -1289,6 +1291,22 @@ def run_train_mode(
         )
         print(f"Fixed loss denominators: {_format_named_values(args.loss_term_denominators)}")
 
+    checkpoint_tracker = None
+    if getattr(args, 'train_keep_best', False):
+        from veros_control.training.best_checkpoint import BestLatestCheckpoint
+        checkpoint_tracker = BestLatestCheckpoint(checkpoint_path)
+
+    def scored_checkpoint(parameters, optimizer_state, records, update, value, terms):
+        payload = _train_checkpoint_payload(
+            args, parameters, optimizer_state, records, update, gpu_name, gpu_tag,
+            restart_file, glorys_file, glorys_target_file, nn_model_kwargs, nn_stats, train_n_steps,
+        )
+        terms_host = np.asarray(jax.device_get(terms))
+        improved = checkpoint_tracker.save(payload, float(value), dict(zip(loss_term_names, map(float, terms_host))))
+        print(f"  saved latest update={update} loss={float(value):.12g}; "
+              f"best update={checkpoint_tracker.best_payload['update']} loss={checkpoint_tracker.best_loss:.12g} "
+              f"new_best={improved}", flush=True)
+
     for update_idx in range(start_update, final_update):
         print(f"\n=== train update {update_idx + 1}/{final_update} ===")
         current_epsilon = _train_epsilon_for_update(args, update_idx, start_update, final_update)
@@ -1314,6 +1332,10 @@ def run_train_mode(
         else:
             jax.block_until_ready((loss, grads, loss_terms))
         grad_time = time.time() - start_time
+
+        if checkpoint_tracker is not None and update_idx == start_update:
+            # The gradient pass evaluated the starting parameters, not an update.
+            scored_checkpoint(params, opt_state, history, update_idx, loss, loss_terms)
 
         current_lr = _train_lr_for_update(args, update_idx, start_update, final_update)
         if candidate_validator is not None and not _tree_stats(grads)["finite"]:
@@ -1404,6 +1426,18 @@ def run_train_mode(
                 f"Non-finite values during train update {update_idx + 1}: {', '.join(bad)}"
             )
 
+        post_loss = post_terms = None
+        if checkpoint_tracker is not None:
+            # No gradient tape: score the exact parameters that will be saved.
+            post_loss, post_terms = ad_train.g(
+                simulation.state, params_after_update, prognostic_keys=prognostic_keys,
+                chunk_sizes=chunk_sizes, sample_steps=args.sample_steps,
+                epsilon=jnp.asarray(current_epsilon), return_aux=True, forward_only=True,
+            )
+            jax.block_until_ready((post_loss, post_terms))
+            if not np.isfinite(float(post_loss)) or not np.isfinite(np.asarray(post_terms)).all():
+                raise FloatingPointError('Nonfinite post-update loss; saved latest/best checkpoints preserved')
+
         params = params_after_update
         opt_state = candidate_opt_state
         history.append(
@@ -1444,7 +1478,12 @@ def run_train_mode(
             }
         )
 
-        if (update_idx + 1) % args.train_save_every == 0 or update_idx + 1 == final_update:
+        if checkpoint_tracker is not None:
+            history[-1]['post_update_loss'] = float(post_loss)
+            history[-1]['post_update_loss_terms'] = dict(zip(loss_term_names, map(float, np.asarray(post_terms))))
+            scored_checkpoint(params, opt_state, history, update_idx + 1, post_loss, post_terms)
+            del post_loss, post_terms
+        elif (update_idx + 1) % args.train_save_every == 0 or update_idx + 1 == final_update:
             save_checkpoint(
                 checkpoint_path,
                 _train_checkpoint_payload(
@@ -1475,6 +1514,8 @@ def run_train_mode(
 
 def main():
     args = parse_args()
+    if args.train_keep_best and (args.run_mode != 'train' or args.loss_mode != 'glorys_target'):
+        raise ValueError('--train-keep-best requires GLORYS training with per-variable loss terms')
     if args.glorys_sampled_interpolation and not (args.basin_mean_loss and args.glorys_linear_interpolation):
         raise ValueError('--glorys-sampled-interpolation requires basin loss and --glorys-linear-interpolation')
     if args.basin_levels < 0:

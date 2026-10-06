@@ -92,6 +92,11 @@ def run_train(*args, **kwargs):
     cfg.candidate_max_retries = scales.candidate_max_retries
     if not scales.fresh_training:
         shutil.copy2(source_checkpoint, target)
+        if getattr(cfg, 'train_keep_best', False):
+            from veros_control.training.best_checkpoint import best_path
+            source_best = best_path(source_checkpoint)
+            if source_best.exists():
+                shutil.copy2(source_best, best_path(target))
     cfg.epsilon = scales.tracer_epsilon
     base_model = bound.arguments['model_batched_unscaled']
     ratio = m.jnp.asarray([1., 1., scales.momentum_epsilon/scales.tracer_epsilon,
