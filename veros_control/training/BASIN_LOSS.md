@@ -51,3 +51,11 @@ reduces the correction caps as well as the tendencies. Only levels 1–5 enter
 the loss; deeper ocean states can still change through the model physics.
 The taper is optional (default off) and stored in checkpoints for resume checks.
 Nested checkpointing, split epsilon, bounds and candidate validation are unchanged.
+
+## All-depth sampled trajectory experiment
+
+`--basin-levels 0` selects all model levels, preserving equal weights across nonempty basin-level pairs (not volume weighting). Any positive level count is also supported. Geographic basin masks are unchanged. Omit `--correction-depth-taper` to allow bounded corrections through the full column.
+
+`--glorys-sampled-interpolation` opts into a target interpolated at each sampled model time: alpha = (time - initial_time)/(720 * dt_tracer). It requires `--basin-mean-loss --glorys-linear-interpolation`; without this flag the previous fixed-endpoint target remains unchanged. The interpolation mode is saved and checked when resuming.
+
+`train_sampled243_alllevels_job.slurm` starts fresh parameters (random hidden layers, zero output layer), optimizer and loss normalization. It averages nine losses at steps 27, 54, ..., 243 with lambda 1 and all 40 levels, for 80 updates. Split epsilons, smooth bounds, candidate validation and nested checkpointing remain enabled. No previous weights are loaded.

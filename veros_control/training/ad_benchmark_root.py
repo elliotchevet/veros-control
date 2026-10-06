@@ -393,7 +393,8 @@ def parse_args():
 
     parser.add_argument('--basin-mean-loss', action='store_true', help='Compare area-weighted T/S means separately for each of six basins and shallow level')
     parser.add_argument('--basin-pattern-lambda', type=float, default=0., help='Weight of within-basin error variance; 0=mean bias, 1=pointwise MSE')
-    parser.add_argument('--basin-levels', type=int, choices=(5, 10), default=5, help='Number of shallowest levels for basin means (default 5)')
+    parser.add_argument('--basin-levels', type=int, default=5, help='Number of shallowest basin-loss levels; 0 selects all (default 5)')
+    parser.add_argument('--glorys-sampled-interpolation', action='store_true', help='For basin loss, interpolate GLORYS at each sampled model time instead of the fixed endpoint')
     args = parser.parse_args()
     args.keys_loss = tuple(args.keys_loss)
     return args
@@ -481,6 +482,8 @@ def make_root_loss_functions(args, simulation, target_file=None, initial_file=No
             time_index=args.glorys_time_index,
         )
 
+        sampled_interpolation = getattr(args, 'glorys_sampled_interpolation', False)
+        initial_target = None
         if args.glorys_linear_interpolation:
             if initial_file is None:
                 raise ValueError("GLORYS interpolation requires the initial GLORYS snapshot")
@@ -490,17 +493,24 @@ def make_root_loss_functions(args, simulation, target_file=None, initial_file=No
             # Interpolate GLORYS snapshots at the rollout time (alpha = n_steps / 720).
             # For 81 steps, the next snapshot contributes 11.25% of the target.
             alpha = args.glorys_interpolation_alpha
-            target = {
-                key: initial_target[key] * (1.0 - alpha) + target[key] * alpha
-                for key in loss_keys
-            }
+            if not sampled_interpolation:
+                target = {
+                    key: initial_target[key] * (1.0 - alpha) + target[key] * alpha
+                    for key in loss_keys
+                }
 
         if getattr(args, "basin_mean_loss", False):
             from veros_control.training.basin_loss import make_basin_loss
+            start_time = float(np.asarray(simulation.state.variables.time))
+            reference_seconds = 720 * float(simulation.state.settings.dt_tracer)
+            alpha_function = lambda state: (state.variables.time - start_time) / reference_seconds
             scalar, names, terms, metadata = make_basin_loss(
                 simulation.state.variables, target, loss_keys, args.basin_levels,
                 pattern_lambda=getattr(args, "basin_pattern_lambda", 0.),
+                initial_target=initial_target if sampled_interpolation else None,
+                target_alpha=alpha_function if sampled_interpolation else None,
             )
+            metadata['sampled_interpolation'] = sampled_interpolation
             args.basin_loss_metadata = metadata
             print(f"Basin means: {metadata['names']}; depths (m): {metadata['depths_m']}")
             return scalar, names, terms
@@ -924,6 +934,7 @@ def _train_checkpoint_payload(
         "freeze_vars": args.freeze_vars,
         "balance_loss_terms": args.balance_loss_terms,
         "loss_term_denominators": args.loss_term_denominators,
+        "glorys_sampled_interpolation": getattr(args, "glorys_sampled_interpolation", False),
         "glorys_linear_interpolation": args.glorys_linear_interpolation,
         "glorys_interpolation_alpha": args.glorys_interpolation_alpha,
         "loss_mode": args.loss_mode,
@@ -972,6 +983,8 @@ def _load_or_init_train_state(args, checkpoint_path, params, optimizer):
         checkpoint = load_checkpoint(checkpoint_path)
 
     if checkpoint is not None and "params" in checkpoint:
+        if checkpoint.get('glorys_sampled_interpolation', False) != getattr(args, 'glorys_sampled_interpolation', False):
+            raise ValueError('Checkpoint GLORYS sampled interpolation differs; use a fresh objective')
         if checkpoint.get("basin_pattern_lambda", 0.) != getattr(args, "basin_pattern_lambda", 0.):
             raise ValueError("Checkpoint basin pattern weight differs; start a fresh objective")
         basin_enabled = getattr(args, "basin_mean_loss", False)
@@ -1462,6 +1475,10 @@ def run_train_mode(
 
 def main():
     args = parse_args()
+    if args.glorys_sampled_interpolation and not (args.basin_mean_loss and args.glorys_linear_interpolation):
+        raise ValueError('--glorys-sampled-interpolation requires basin loss and --glorys-linear-interpolation')
+    if args.basin_levels < 0:
+        raise ValueError('--basin-levels must be nonnegative; 0 selects all levels')
     if not np.isfinite(args.basin_pattern_lambda) or args.basin_pattern_lambda < 0:
         raise ValueError('Basin pattern lambda must be finite and nonnegative')
     if args.basin_pattern_lambda and not args.basin_mean_loss:

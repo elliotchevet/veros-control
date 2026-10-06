@@ -19,3 +19,11 @@ Additional plots:
 - `plot_surface_basin_improvement.py` compares surface basin bias and RMSE against the no-NN replay.
 - `plot_training_baseline.py` adds the fixed no-NN objective to training curves.
 - `plot_heat_flux_equivalent.py OUTPUT` converts time-mean temperature tendencies to surface-layer and full-column heat-flux equivalents. The default color range is ±200 W/m²; `--color-limit 400` changes the display range and `--max-scale` uses each map's maximum absolute value. These options change plotting limits only; saved values and area-weighted statistics retain the full corrections.
+
+## One-month extrapolation with frozen endpoint weights
+
+`sbatch scripts/paired_rollout/run_month.slurm` runs two 720-hour forward trajectories from the same initialization: no NN and job 55286's update-80, 27-hour endpoint weights (lambda 1). It restores the checkpoint's normalization, split epsilons, smooth bounds and taper. No optimizer is constructed for training or updated. The forcing window covers the full horizon.
+
+Hourly error metrics use GLORYS interpolation at hour/720. At hour 720 the reference is the next available monthly GLORYS field, without interpolation. This is the existing 30-model-day convention, not a claim that the monthly means are instantaneous observations or exactly 30 calendar days apart.
+
+Outputs are isolated in `month_job_JOBID`. Histories and cumulative correction statistics are flushed daily; full field snapshots are saved daily and at hours 1, 27 and 720. A trajectory stops on nonfinite active state/correction values, nonpositive salinity, or directional CFL > 1; it saves the failed fields and reason while allowing the other trajectory to run. This CFL threshold is a diagnostic guard, not a proof of numerical stability. `plot_month.py OUTPUT` renders the histories and latest common-time comparison, even for an incomplete pair. Source checkpoint SHA256 is checked before and after inference.

@@ -49,6 +49,32 @@ class BasinLossTests(unittest.TestCase):
         self.assertAlmostEqual(float(grad[6,4,11]/grad[3,4,11]),3.,places=6)
         self.assertEqual(float(grad[3,4,0]),0.)
 
+    def test_all_levels_include_deep_errors_and_gradients(self):
+        vs, target = self.fixture()
+        field = jnp.ones_like(jnp.asarray(target['temp']))
+        _, _, terms, meta = m.make_basin_loss(vs, target, levels=0, pattern_lambda=1.)
+        self.assertEqual(meta['level_indices'], list(range(11, -1, -1)))
+        def loss(f):
+            return terms(NS(variables=NS(temp=f, salt=jnp.zeros_like(f), tau=0)))[0]
+        self.assertAlmostEqual(float(loss(field)), 1., places=6)
+        self.assertGreater(float(jnp.sum(jnp.abs(jax.grad(loss)(field)[:,:,0]))), 0.)
+        for bad in (-1, 13):
+            with self.assertRaises(ValueError):
+                m.make_basin_loss(vs, target, levels=bad)
+
+    def test_sampled_targets_use_each_state_time(self):
+        vs, initial = self.fixture()
+        target = {k:np.ones_like(v)*8 for k,v in initial.items()}
+        _, _, terms, _ = m.make_basin_loss(vs, target, levels=0, pattern_lambda=1.,
+            initial_target=initial, target_alpha=lambda state:state.variables.time/720.)
+        for step in (27,54,243):
+            field = jnp.ones_like(jnp.asarray(initial['temp'])) * (8*step/720.)
+            def loss(f):
+                return terms(NS(variables=NS(temp=f,salt=field,tau=0,time=jnp.asarray(step))))[0]
+            self.assertAlmostEqual(float(loss(field)),0.,places=6)
+            self.assertAlmostEqual(float(loss(field+1)),1.,places=6)
+            self.assertGreater(float(jnp.sum(jnp.abs(jax.grad(loss)(field+1)))),0.)
+
     def test_pattern_penalty_and_gradient(self):
         vs, target = self.fixture()
         vs.maskT[:] = 0

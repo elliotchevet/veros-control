@@ -19,14 +19,17 @@ def basin_masks(lon, lat):
         np.ones_like(x, dtype=bool) & (y >= -90.) & (y < -60.)))
 
 
-def make_basin_loss(variables, target, keys=('temp', 'salt'), levels=5, pattern_lambda=0.):
+def make_basin_loss(variables, target, keys=('temp', 'salt'), levels=5, pattern_lambda=0.,
+                    initial_target=None, target_alpha=None):
     if not np.isfinite(pattern_lambda) or pattern_lambda < 0:
         raise ValueError('Pattern lambda must be finite and nonnegative')
-    if levels not in (5, 10):
-        raise ValueError('Basin loss requires 5 or 10 shallowest levels')
+    if not isinstance(levels, (int, np.integer)) or levels < 0:
+        raise ValueError('Basin levels must be a nonnegative integer (0 selects all)')
     if not keys or any(k not in ('temp', 'salt') for k in keys):
         raise ValueError('Basin loss supports temperature and salinity only')
     z = np.asarray(variables.zt)
+    if levels == 0:
+        levels = len(z)
     if len(z) < levels:
         raise ValueError('Requested more basin levels than the model has')
     # Select by physical depth, not array order (Veros stores surface last).
@@ -61,15 +64,32 @@ def make_basin_loss(variables, target, keys=('temp', 'salt'), levels=5, pattern_
         target_means[key] = means(jnp.asarray(truth))
         target_fields[key] = jnp.take(jnp.asarray(truth), selected, axis=2)
 
+    initial_fields = {}
+    initial_means = {}
+    if initial_target is not None:
+        if target_alpha is None:
+            raise ValueError('Time-varying targets require an alpha function')
+        for key in keys:
+            truth = np.asarray(initial_target[key])
+            if truth.shape != np.asarray(target[key]).shape or not np.isfinite(truth[..., indices][np.any(weights > 0, axis=0)]).all():
+                raise ValueError('Invalid initial GLORYS target')
+            initial_fields[key] = jnp.take(jnp.asarray(truth), selected, axis=2)
+            initial_means[key] = means(jnp.asarray(truth))
+
     def terms(state):
         result = []
         for key in keys:
             field = getattr(state.variables, key)
             if field.ndim == 4:
                 field = field[..., state.variables.tau]
-            squared = (means(field) - target_means[key]) ** 2
+            truth_mean, truth_field = target_means[key], target_fields[key]
+            if initial_target is not None:
+                alpha = target_alpha(state)
+                truth_mean = initial_means[key] * (1-alpha) + truth_mean * alpha
+                truth_field = initial_fields[key] * (1-alpha) + truth_field * alpha
+            squared = (means(field) - truth_mean) ** 2
             if pattern_lambda > 0:
-                error = jnp.take(field, selected, axis=2) - target_fields[key]
+                error = jnp.take(field, selected, axis=2) - truth_field
                 masked_error = jnp.where(normalized > 0, error[None, ...], 0.)
                 if pattern_lambda == 1.:
                     squared = jnp.sum(normalized * masked_error ** 2, axis=(1, 2))

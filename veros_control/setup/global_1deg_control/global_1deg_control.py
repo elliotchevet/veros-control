@@ -20,6 +20,9 @@ from veros_control.core.forcing import (
     predict_nn_forcing,
 )
 from veros_control.core.model import VerticalCorrectionMLP
+from veros_control.setup.global_1deg_control.forcing_window import (
+    plan_forcing_window, local_forcing_indices,
+)
 
 BASE_PATH = os.path.dirname(os.path.realpath(__file__))
 DATA_FILES = tools.get_assets("global_1deg_control", os.path.join(BASE_PATH, "assets.json"))
@@ -311,7 +314,7 @@ class GlobalOneDegreeSetup(VerosSetup):
             )
         return data.T
 
-    def prepare_ERA5_forcing_window(self, state, n_steps, margin=6):
+    def prepare_ERA5_forcing_window(self, state, n_steps, margin=0):
         import numpy as np
 
         vs = state.variables
@@ -321,15 +324,10 @@ class GlobalOneDegreeSetup(VerosSetup):
         forcing_interval = model_year_seconds / period_count
         forcing_time = float(np.asarray(vs.time + vs.forcing_time_shift)) % model_year_seconds
 
-        first_index = int(np.floor(forcing_time / forcing_interval)) - 2
-        needed = int(np.ceil((n_steps * settings.dt_tracer) / forcing_interval)) + margin
-        length = min(period_count, max(needed, 2))
-
-        self._era5_forcing_window = {
-            "start": first_index % period_count,
-            "length": length,
-            "period_count": period_count,
-        }
+        self._era5_forcing_window = plan_forcing_window(
+            forcing_time, n_steps, settings.dt_tracer, forcing_interval, period_count, margin,
+        )
+        length = self._era5_forcing_window["length"]
         self._era5_forcing_cache = {}
 
         for var in ("ewss", "nsss", "str", "slhf", "sshf", "ssr", "e", "tp"):
@@ -781,8 +779,14 @@ def set_forcing_kernel(
     )
 
     window_length = taux_forcing.shape[-1]
-    local_n1 = npx.mod(n1 - forcing_index_start, window_length)
-    local_n2 = npx.mod(n2 - forcing_index_start, window_length)
+    local_n1, local_n2, forcing_covered = local_forcing_indices(
+        n1, n2, forcing_index_start, forcing_period_count, window_length, npx,
+    )
+    # JAX gathers may silently clamp out-of-range indices. Mark missing forcing
+    # explicitly nonfinite instead of recycling unrelated records. The rollout
+    # finite-state checks then reject an exhausted or incorrectly sized window.
+    f1 = npx.where(forcing_covered, f1, npx.nan)
+    f2 = npx.where(forcing_covered, f2, npx.nan)
 
     mask_surface = vs.maskT[2:-2, 2:-2, -1, npx.newaxis]
     taux_data = npx.stack([taux_forcing[:, :, local_n1], taux_forcing[:, :, local_n2]], axis=-1) * mask_surface
