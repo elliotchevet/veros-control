@@ -29,6 +29,7 @@ def encode_lon_lat_sincos(lon_lat):
 class VerticalCorrectionMLP(nn.Module):
     hidden_dim: int = 64
     depth: int = 2
+    residual_blocks: int = 0              # 0 preserves the original plain MLP
     nz: int = 3
     nb_profiles: int = 4                  # always 4 outputs: T, S, U, V
     init_eps: float = 1e-6
@@ -40,6 +41,7 @@ class VerticalCorrectionMLP(nn.Module):
     TS: bool = False                      # if True: use only T,S as input
     use_forcings: bool = False
     zero_output_init: bool = False
+    surface_only: bool = False           # full-profile inputs, surface-only outputs
 
     @nn.compact
     def __call__(self, x, lon_lat=None, dz=None):
@@ -55,8 +57,14 @@ class VerticalCorrectionMLP(nn.Module):
         if self.use_forcings and x.shape[-1] == 4:
             raise ValueError("use_forcings=True requires forcing channels after [T,S,U,V]")
 
+        if self.surface_only and self.conservative_mixing:
+            raise ValueError("Surface-only corrections cannot use conservative_mixing")
+
         state_features = x[:, :4]
         forcing_features = x[:, 4:] if self.use_forcings else x[:, 4:4]
+
+        if self.residual_blocks < 0 or self.depth < 1 or self.hidden_dim < 1:
+            raise ValueError("Invalid residual block count, depth, or width")
 
         # -------- Inputs vs Outputs --------
         if self.TS:
@@ -105,13 +113,23 @@ class VerticalCorrectionMLP(nn.Module):
                 one_hot_flat = one_hot_vectors.flatten()
                 x_group = npx.concatenate([x_group, one_hot_flat], axis=0)
 
-            # hidden layers
-            for _ in range(self.depth):
-                x_group = nn.Dense(self.hidden_dim)(x_group)
-                x_group = nn.relu(x_group)
+            if self.residual_blocks:
+                x_group = nn.Dense(self.hidden_dim, name=f"input_projection_{group_idx}")(x_group)
+                for block in range(self.residual_blocks):
+                    residual = x_group
+                    for layer in range(self.depth):
+                        residual = nn.Dense(self.hidden_dim, name=f"block_{group_idx}_{block}_{layer}")(residual)
+                        if layer < self.depth - 1:
+                            residual = nn.relu(residual)
+                    x_group = x_group + residual
+            else:
+                for _ in range(self.depth):
+                    x_group = nn.Dense(self.hidden_dim)(x_group)
+                    x_group = nn.relu(x_group)
 
             # output layer -> vertical corrections for this group
-            out_dim = self.nz * len(group)
+            output_levels = 1 if self.surface_only else self.nz
+            out_dim = output_levels * len(group)
             output_init = {}
             if self.zero_output_init:
                 output_init = {
@@ -119,7 +137,7 @@ class VerticalCorrectionMLP(nn.Module):
                     "bias_init": nn.initializers.zeros,
                 }
             x_group = nn.Dense(out_dim, **output_init)(x_group)
-            x_group = x_group.reshape(self.nz, len(group))
+            x_group = x_group.reshape(output_levels, len(group))
 
             # epsilon scaling
             if self.train_epsilon:
@@ -145,5 +163,9 @@ class VerticalCorrectionMLP(nn.Module):
 
         # -------- Concatenate outputs --------
         x_out = npx.concatenate(outputs, axis=1)  # shape = (nz, nb_outputs)
+        if self.surface_only:
+            # Veros stores the surface at the last vertical index. Preserve the
+            # integrator interface, with exact zero tendencies below the surface.
+            x_out = npx.concatenate([npx.zeros((self.nz - 1, nb_outputs), dtype=x_out.dtype), x_out], axis=0)
         return x_out
 

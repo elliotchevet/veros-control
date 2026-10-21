@@ -23,6 +23,7 @@ parser.add_argument('--max-correction-per-hour', type=float, nargs=4, default=[0
 parser.add_argument('--validate-candidates', action='store_true')
 parser.add_argument('--candidate-max-retries', type=int, default=8)
 parser.add_argument('--max-rollout-cfl', type=float, default=1.0)
+parser.add_argument('--correction-depth-taper', type=int, nargs=2, default=None, metavar=('FULL_LEVELS', 'TRANSITION_LEVELS'))
 scales, remaining = parser.parse_known_args()
 if any(not math.isfinite(x) or x <= 0 for x in scales.max_correction_per_hour):
     raise ValueError('Correction bounds must be finite and positive')
@@ -77,10 +78,25 @@ def run_train(*args, **kwargs):
         raise ValueError('Saved correction bounds differ; explicitly migrate rather than silently changing them')
     if scales.bound_corrections and cfg.conservative_mixing:
         raise ValueError('Pointwise tanh bounds do not preserve conservative_mixing; this combination is unsupported')
+    if checkpoint.get('correction_depth_taper') != scales.correction_depth_taper and checkpoint:
+        raise ValueError('Saved correction depth taper differs; start a fresh experiment')
+    taper = 1.
+    if scales.correction_depth_taper is not None:
+        if cfg.conservative_mixing:
+            raise ValueError('Depth taper is incompatible with conservative_mixing')
+        from veros_control.training.stability import correction_depth_taper
+        taper = m.jnp.asarray(correction_depth_taper(
+            bound.arguments['simulation'].state.variables.zt, *scales.correction_depth_taper))[:, None]
+        print(f'Correction depth taper (model level order): {taper[:, 0]}', flush=True)
     cfg.lr_backoff = checkpoint.get('lr_backoff', 1.0)
     cfg.candidate_max_retries = scales.candidate_max_retries
     if not scales.fresh_training:
         shutil.copy2(source_checkpoint, target)
+        if getattr(cfg, 'train_keep_best', False):
+            from veros_control.training.best_checkpoint import best_path
+            source_best = best_path(source_checkpoint)
+            if source_best.exists():
+                shutil.copy2(source_best, best_path(target))
     cfg.epsilon = scales.tracer_epsilon
     base_model = bound.arguments['model_batched_unscaled']
     ratio = m.jnp.asarray([1., 1., scales.momentum_epsilon/scales.tracer_epsilon,
@@ -92,8 +108,10 @@ def run_train(*args, **kwargs):
             epsilon = m.jnp.asarray([scales.tracer_epsilon, scales.tracer_epsilon,
                                     scales.momentum_epsilon, scales.momentum_epsilon])
             # nn_epsilon_step multiplies by tracer epsilon afterward.
-            return bound_corrections(predictions, epsilon, scales.max_correction_per_hour) / scales.tracer_epsilon
-        return m.jnp.where(ratio != 0, predictions * ratio, 0.)
+            applied = bound_corrections(predictions, epsilon, scales.max_correction_per_hour) / scales.tracer_epsilon
+        else:
+            applied = m.jnp.where(ratio != 0, predictions * ratio, 0.)
+        return m.jnp.where(taper > 0, applied * taper, 0.)
     bound.arguments['model_batched_unscaled'] = scaled_model
     if scales.validate_candidates:
         from veros_control.training.stability import make_rollout_validator
@@ -107,7 +125,8 @@ def run_train(*args, **kwargs):
         )
     print(f'Correction bounds per hour: {requested_bounds}; candidate validation: {scales.validate_candidates}', flush=True)
     print(f'SPLIT EPSILON: tracer={scales.tracer_epsilon:g}, momentum={scales.momentum_epsilon:g}', flush=True)
-    print(f'Starting at update {resume_update} for {cfg.train_updates} additional updates with its optimizer state and fixed loss denominators; nested checkpointing unchanged.', flush=True)
+    initialization = 'fresh optimizer and newly calibrated loss denominators' if scales.fresh_training else 'saved optimizer and fixed loss denominators'
+    print(f'Starting at update {resume_update} for {cfg.train_updates} additional updates with {initialization}; nested checkpointing unchanged.', flush=True)
     return original_train(*bound.args, **bound.kwargs)
 
 
@@ -117,7 +136,8 @@ def payload(*args, **kwargs):
                   momentum_epsilon=scales.momentum_epsilon,
                   split_epsilon_runner=str(Path(__file__).resolve()),
                   continuation_source=None if scales.fresh_training else str(Path(os.environ['SOURCE_CHECKPOINT']).resolve()))
-    result.update(correction_bounds_per_hour=scales.max_correction_per_hour if scales.bound_corrections else None,
+    result.update(correction_depth_taper=scales.correction_depth_taper,
+                  correction_bounds_per_hour=scales.max_correction_per_hour if scales.bound_corrections else None,
                   validate_candidates=scales.validate_candidates, max_rollout_cfl=scales.max_rollout_cfl,
                   lr_backoff=getattr(active_cfg, 'lr_backoff', 1.0),
                   candidate_max_retries=scales.candidate_max_retries)

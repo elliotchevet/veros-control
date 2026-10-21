@@ -239,6 +239,8 @@ def parse_args():
             "and enables input normalization."
         ),
     )
+    parser.add_argument("--surface-only", action="store_true", help="Keep full-profile inputs and predict corrections only at the surface.")
+    parser.add_argument("--residual-blocks", type=int, default=0, help="Residual blocks; 0 selects the original MLP. --depth sets layers per block.")
     parser.add_argument("--hidden-dim", type=int, default=64)
     parser.add_argument("--depth", type=int, default=2)
     parser.add_argument("--use-lon-lat", action="store_true")
@@ -392,7 +394,10 @@ def parse_args():
     parser.set_defaults(freeze_vars=True)
 
     parser.add_argument('--basin-mean-loss', action='store_true', help='Compare area-weighted T/S means separately for each of six basins and shallow level')
-    parser.add_argument('--basin-levels', type=int, choices=(5, 10), default=5, help='Number of shallowest levels for basin means (default 5)')
+    parser.add_argument('--basin-pattern-lambda', type=float, default=0., help='Weight of within-basin error variance; 0=mean bias, 1=pointwise MSE')
+    parser.add_argument('--basin-levels', type=int, default=5, help='Number of shallowest basin-loss levels; 0 selects all (default 5)')
+    parser.add_argument('--glorys-sampled-interpolation', action='store_true', help='For basin loss, interpolate GLORYS at each sampled model time instead of the fixed endpoint')
+    parser.add_argument('--train-keep-best', action='store_true', help='Evaluate and atomically save latest and best parameters with matching optimizer state after every update')
     args = parser.parse_args()
     args.keys_loss = tuple(args.keys_loss)
     return args
@@ -480,6 +485,8 @@ def make_root_loss_functions(args, simulation, target_file=None, initial_file=No
             time_index=args.glorys_time_index,
         )
 
+        sampled_interpolation = getattr(args, 'glorys_sampled_interpolation', False)
+        initial_target = None
         if args.glorys_linear_interpolation:
             if initial_file is None:
                 raise ValueError("GLORYS interpolation requires the initial GLORYS snapshot")
@@ -489,16 +496,27 @@ def make_root_loss_functions(args, simulation, target_file=None, initial_file=No
             # Interpolate GLORYS snapshots at the rollout time (alpha = n_steps / 720).
             # For 81 steps, the next snapshot contributes 11.25% of the target.
             alpha = args.glorys_interpolation_alpha
-            target = {
-                key: initial_target[key] * (1.0 - alpha) + target[key] * alpha
-                for key in loss_keys
-            }
+            if not sampled_interpolation:
+                target = {
+                    key: initial_target[key] * (1.0 - alpha) + target[key] * alpha
+                    for key in loss_keys
+                }
 
         if getattr(args, "basin_mean_loss", False):
             from veros_control.training.basin_loss import make_basin_loss
+            start_time = float(np.asarray(simulation.state.variables.time))
+            reference_seconds = getattr(args, "glorys_reference_seconds", 720 * float(simulation.state.settings.dt_tracer))
+            alpha_function = lambda state: (state.variables.time - start_time) / reference_seconds
             scalar, names, terms, metadata = make_basin_loss(
                 simulation.state.variables, target, loss_keys, args.basin_levels,
+                pattern_lambda=getattr(args, "basin_pattern_lambda", 0.),
+                initial_target=initial_target if sampled_interpolation else None,
+                target_alpha=alpha_function if sampled_interpolation else None,
+                depth_loss=getattr(args, "depth_loss", None),
+                spatial_filter=getattr(args, "spatial_loss_filter", None),
+                lead_hours=lambda state: (state.variables.time-start_time)/3600.,
             )
+            metadata['sampled_interpolation'] = sampled_interpolation
             args.basin_loss_metadata = metadata
             print(f"Basin means: {metadata['names']}; depths (m): {metadata['depths_m']}")
             return scalar, names, terms
@@ -893,11 +911,13 @@ def _train_checkpoint_payload(
         "losses": [item["loss"] for item in history],
         "update": update_index,
         "train_mode": "ad_benchmark_root",
+        "train_keep_best": getattr(args, "train_keep_best", False),
         "run_mode": args.run_mode,
         "gpu_name": gpu_name,
         "gpu_tag": gpu_tag,
         "hidden_dim_nn": args.hidden_dim,
         "depth_nn": args.depth,
+        "residual_blocks": getattr(args, "residual_blocks", 0),
         "epsilon": args.epsilon,
         "epsilon_final": args.train_epsilon_final,
         "epsilon_schedule": args.train_epsilon_schedule,
@@ -909,6 +929,7 @@ def _train_checkpoint_payload(
         "num_mlps": args.num_mlps,
         "TS": args.TS,
         "zero_output_init": args.zero_output_init,
+        "surface_only": getattr(args, "surface_only", False),
         "stats_features": nn_stats,
         "feature_stats_file": args.feature_stats_file,
         "normalize_inputs": getattr(args, "normalize_inputs", nn_stats is not None),
@@ -922,11 +943,13 @@ def _train_checkpoint_payload(
         "freeze_vars": args.freeze_vars,
         "balance_loss_terms": args.balance_loss_terms,
         "loss_term_denominators": args.loss_term_denominators,
+        "glorys_sampled_interpolation": getattr(args, "glorys_sampled_interpolation", False),
         "glorys_linear_interpolation": args.glorys_linear_interpolation,
         "glorys_interpolation_alpha": args.glorys_interpolation_alpha,
         "loss_mode": args.loss_mode,
         "loss_reduction": args.loss_reduction,
         "keys_loss": list(args.keys_loss),
+        "basin_pattern_lambda": getattr(args, "basin_pattern_lambda", 0.),
         "basin_mean_loss": getattr(args, "basin_mean_loss", False),
         "basin_levels": getattr(args, "basin_levels", 5) if getattr(args, "basin_mean_loss", False) else None,
         "basin_loss_metadata": getattr(args, "basin_loss_metadata", None),
@@ -936,6 +959,7 @@ def _train_checkpoint_payload(
         "glorys_time_index": args.glorys_time_index,
         "glorys_month_index": args.glorys_month_index,
         "glorys_start_month": args.glorys_start_month,
+        "monthly_initial_states": getattr(args, "monthly_initial_states", None),
         "lr": args.train_lr,
         "lr_final": args.train_lr_final,
         "lr_schedule": args.train_lr_schedule,
@@ -969,6 +993,10 @@ def _load_or_init_train_state(args, checkpoint_path, params, optimizer):
         checkpoint = load_checkpoint(checkpoint_path)
 
     if checkpoint is not None and "params" in checkpoint:
+        if checkpoint.get('glorys_sampled_interpolation', False) != getattr(args, 'glorys_sampled_interpolation', False):
+            raise ValueError('Checkpoint GLORYS sampled interpolation differs; use a fresh objective')
+        if checkpoint.get("basin_pattern_lambda", 0.) != getattr(args, "basin_pattern_lambda", 0.):
+            raise ValueError("Checkpoint basin pattern weight differs; start a fresh objective")
         basin_enabled = getattr(args, "basin_mean_loss", False)
         if checkpoint.get("basin_mean_loss", False) != basin_enabled or (basin_enabled and checkpoint.get("basin_levels") != args.basin_levels):
             raise ValueError("Checkpoint basin objective differs; start a separate training output (optionally initialize NN weights with --nn-checkpoint)")
@@ -1244,8 +1272,28 @@ def run_train_mode(
         loss_term_count=len(loss_term_names),
     )
 
-    candidate_validator = getattr(args, "candidate_validator", None)
+    batch_factory = getattr(args, "train_batch_factory", None)
+    if batch_factory is not None:
+        ad_train = batch_factory(ad_train)
+        ad_train.select(start_update)
+        if getattr(args, 'monthly_baseline_normalization', False):
+            if getattr(args, 'monthly_baseline_calibration', None) is None:
+                ad_train.calibrate_no_nn(params, prognostic_keys=prognostic_keys,
+                    chunk_sizes=chunk_sizes, sample_steps=args.sample_steps,
+                    epsilon=jnp.asarray(args.epsilon))
+            else:
+                print(f'Reusing saved no-NN baseline denominators: {args.loss_term_denominators}', flush=True)
+    candidate_validator = ad_train.validate if batch_factory is not None else getattr(args, "candidate_validator", None)
     lr_backoff = getattr(args, "lr_backoff", 1.0)
+    loss_backtracking = getattr(args, "loss_backtracking", False)
+    min_learning_rate = getattr(args, "train_min_lr", 0.)
+    decrease_start = getattr(args, "lr_decrease_start_epoch", 1)
+    lr_backoff = max(lr_backoff, min_learning_rate / args.train_lr)
+    clean_updates = getattr(args, "lr_clean_updates", 0)
+    if loss_backtracking:
+        print(f'Loss-based LR backtracking enabled: maximum={args.train_lr:g}, initial={args.train_lr * lr_backoff:g}; minimum={min_learning_rate:g}, decrease test from epoch={decrease_start}; recovery 1.5 after 5 clean updates', flush=True)
+    if loss_backtracking and candidate_validator is None:
+        raise ValueError('Loss backtracking requires candidate validation')
     if candidate_validator is not None:
         valid, diagnostic = candidate_validator(params)
         print(f"Initial rollout validation: valid={valid}: {diagnostic}")
@@ -1271,8 +1319,50 @@ def run_train_mode(
         )
         print(f"Fixed loss denominators: {_format_named_values(args.loss_term_denominators)}")
 
+    checkpoint_tracker = None
+    if getattr(args, 'train_keep_best', False):
+        from veros_control.training.best_checkpoint import BestLatestCheckpoint
+        checkpoint_tracker = BestLatestCheckpoint(checkpoint_path)
+
+    def scored_checkpoint(parameters, optimizer_state, records, update, value, terms):
+        payload = _train_checkpoint_payload(
+            args, parameters, optimizer_state, records, update, gpu_name, gpu_tag,
+            restart_file, glorys_file, glorys_target_file, nn_model_kwargs, nn_stats, train_n_steps,
+        )
+        if batch_factory is not None:
+            score_every = getattr(args, 'checkpoint_score_every', 1)
+            if update % score_every and update != final_update:
+                from veros_control.training.best_checkpoint import atomic_save
+                payload.update(checkpoint_loss=float(value), checkpoint_loss_terms=dict(zip(loss_term_names, map(float, np.asarray(terms)))),
+                    checkpoint_score_kind='current training batch; excluded from best selection',
+                    checkpoint_score_months=list(ad_train.months), best_loss=checkpoint_tracker.best_loss,
+                    best_update=checkpoint_tracker.best_payload['update'])
+                if getattr(args, 'monthly_baseline_normalization', False):
+                    payload['checkpoint_relative_loss_terms'] = {key: value / args.loss_term_denominators[key]
+                        for key, value in payload['checkpoint_loss_terms'].items()}
+                atomic_save(checkpoint_path, payload)
+                return
+            value, terms = ad_train.checkpoint_score(parameters)
+            payload['checkpoint_score_months'] = list(ad_train.score_months)
+            payload['checkpoint_score_kind'] = 'fixed monthly reference panel (not held-out validation)'
+            if records and records[-1]['update'] == update:
+                records[-1]['reference_loss'] = float(value)
+                records[-1]['reference_loss_terms'] = dict(zip(loss_term_names, map(float, np.asarray(terms))))
+        terms_host = np.asarray(jax.device_get(terms))
+        if getattr(args, 'monthly_baseline_normalization', False):
+            payload['checkpoint_relative_loss_terms'] = {key: float(value) / args.loss_term_denominators[key]
+                for key, value in zip(loss_term_names, terms_host)}
+            print(f"  REFERENCE original_terms={dict(zip(loss_term_names, map(float, terms_host)))} baseline_relative_terms={payload['checkpoint_relative_loss_terms']}", flush=True)
+        improved = checkpoint_tracker.save(payload, float(value), dict(zip(loss_term_names, map(float, terms_host))))
+        print(f"  saved latest update={update} loss={float(value):.12g}; "
+              f"best update={checkpoint_tracker.best_payload['update']} loss={checkpoint_tracker.best_loss:.12g} "
+              f"new_best={improved}", flush=True)
+
     for update_idx in range(start_update, final_update):
+        epoch_wall_start = time.monotonic()
         print(f"\n=== train update {update_idx + 1}/{final_update} ===")
+        if batch_factory is not None:
+            ad_train.select(update_idx)
         current_epsilon = _train_epsilon_for_update(args, update_idx, start_update, final_update)
         tendency_ratios = tendency_ratio_diagnostics(
             simulation,
@@ -1297,9 +1387,15 @@ def run_train_mode(
             jax.block_until_ready((loss, grads, loss_terms))
         grad_time = time.time() - start_time
 
+        if checkpoint_tracker is not None and update_idx == start_update:
+            # The gradient pass evaluated the starting parameters, not an update.
+            scored_checkpoint(params, opt_state, history, update_idx, loss, loss_terms)
+
         current_lr = _train_lr_for_update(args, update_idx, start_update, final_update)
         if candidate_validator is not None and not _tree_stats(grads)["finite"]:
             raise FloatingPointError("Nonfinite gradient at current parameters; reducing the candidate learning rate cannot repair this gradient")
+        if loss_backtracking and not np.isfinite(float(loss)):
+            raise FloatingPointError('Nonfinite current loss; previous checkpoint preserved')
         raw_updates, candidate_opt_state = optimizer.update(grads, opt_state, params)
         candidate_retries = 0
         candidate_report = None
@@ -1308,11 +1404,31 @@ def run_train_mode(
                 raise FloatingPointError("Nonfinite candidate Adam state; previous optimizer state preserved")
             from veros_control.training.stability import backtrack_candidate
             scheduled_lr = current_lr
+            def candidate_score(candidate):
+                return ad_train.g(
+                    simulation.state, candidate, prognostic_keys=prognostic_keys,
+                    chunk_sizes=chunk_sizes, sample_steps=args.sample_steps,
+                    epsilon=jnp.asarray(current_epsilon), return_aux=True, forward_only=True,
+                )
             params_after_update, updates, current_lr, candidate_retries, candidate_report = backtrack_candidate(
                 params, raw_updates, scheduled_lr * lr_backoff, candidate_validator,
                 max_retries=getattr(args, "candidate_max_retries", 8),
+                score=candidate_score if loss_backtracking else None,
+                reference_loss=float(loss) if loss_backtracking else None,
+                min_learning_rate=min_learning_rate,
+                enforce_loss_decrease=update_idx + 1 >= decrease_start,
             )
-            lr_backoff *= 0.5 ** candidate_retries
+            if loss_backtracking:
+                from veros_control.training.stability import recover_learning_rate
+                # Use the actual accepted rate: the floor can truncate a halving.
+                lr_backoff = current_lr / scheduled_lr
+                clean_updates = 0 if candidate_retries else clean_updates
+                if not candidate_retries:
+                    lr_backoff, clean_updates = recover_learning_rate(lr_backoff, 0, clean_updates)
+                args.lr_clean_updates = clean_updates
+            else:
+                lr_backoff *= 0.5 ** candidate_retries
+            lr_backoff = max(lr_backoff, min_learning_rate / scheduled_lr)
             args.lr_backoff = lr_backoff
         else:
             updates = jax.tree_util.tree_map(
@@ -1386,11 +1502,28 @@ def run_train_mode(
                 f"Non-finite values during train update {update_idx + 1}: {', '.join(bad)}"
             )
 
+        post_loss = post_terms = None
+        if loss_backtracking:
+            # Reuse the accepted candidate score; do not run a third forward rollout.
+            post_loss = candidate_report['loss']
+            post_terms = jnp.asarray(candidate_report['loss_terms'])
+        elif checkpoint_tracker is not None:
+            # No gradient tape: score the exact parameters that will be saved.
+            post_loss, post_terms = ad_train.g(
+                simulation.state, params_after_update, prognostic_keys=prognostic_keys,
+                chunk_sizes=chunk_sizes, sample_steps=args.sample_steps,
+                epsilon=jnp.asarray(current_epsilon), return_aux=True, forward_only=True,
+            )
+            jax.block_until_ready((post_loss, post_terms))
+            if not np.isfinite(float(post_loss)) or not np.isfinite(np.asarray(post_terms)).all():
+                raise FloatingPointError('Nonfinite post-update loss; saved latest/best checkpoints preserved')
+
         params = params_after_update
         opt_state = candidate_opt_state
         history.append(
             {
                 "update": update_idx + 1,
+                **({"batch_months": list(ad_train.months)} if batch_factory is not None else {}),
                 "loss": loss_value,
                 "lr": current_lr,
                 "epsilon": current_epsilon,
@@ -1426,7 +1559,16 @@ def run_train_mode(
             }
         )
 
-        if (update_idx + 1) % args.train_save_every == 0 or update_idx + 1 == final_update:
+        if checkpoint_tracker is not None:
+            history[-1]['post_update_loss'] = float(post_loss)
+            history[-1]['post_update_loss_terms'] = dict(zip(loss_term_names, map(float, np.asarray(post_terms))))
+            if getattr(args, 'monthly_baseline_normalization', False):
+                history[-1]['post_update_relative_terms'] = {key: value / args.loss_term_denominators[key]
+                    for key, value in history[-1]['post_update_loss_terms'].items()}
+                print(f"  POST loss={float(post_loss):.6g} original_terms={history[-1]['post_update_loss_terms']} baseline_relative_terms={history[-1]['post_update_relative_terms']}", flush=True)
+            scored_checkpoint(params, opt_state, history, update_idx + 1, post_loss, post_terms)
+            del post_loss, post_terms
+        elif (update_idx + 1) % args.train_save_every == 0 or update_idx + 1 == final_update:
             save_checkpoint(
                 checkpoint_path,
                 _train_checkpoint_payload(
@@ -1447,6 +1589,16 @@ def run_train_mode(
             )
             print(f"  saved train checkpoint -> {checkpoint_path}")
 
+        elapsed = time.monotonic() - epoch_wall_start
+        history[-1]['epoch_wall_seconds'] = elapsed
+        if batch_factory is not None:
+            print(f"EPOCH {update_idx+1}/{final_update} | horizon={train_n_steps} | months={ad_train.months} | loss={history[-1]['post_update_loss']:.6g} | lr={current_lr:.3g} | wall={elapsed:.2f}s | cumulative_rollouts={ad_train.rollout_counts}", flush=True)
+        else:
+            print(f"EPOCH {update_idx+1}/{final_update} | horizon={train_n_steps} | months=(1,) | lr={current_lr:.3g} | wall={elapsed:.2f}s", flush=True)
+        if batch_factory is not None:
+            progress_path = os.path.join(os.path.dirname(checkpoint_path), 'progress.log')
+            with open(progress_path, 'a') as stream:
+                stream.write(f"epoch={update_idx+1:03d}/{final_update} horizon={train_n_steps:3d} months={ad_train.months} loss={history[-1]['post_update_loss']:.6f} terms={history[-1]['post_update_loss_terms']} relative_terms={history[-1].get('post_update_relative_terms', {})} lr={current_lr:.2e} wall_s={elapsed:.2f} rollouts={ad_train.rollout_counts}\n")
         del loss, grads, loss_terms, raw_updates, updates, params_after_update
         gc.collect()
         print(f"  memory after update: live_arrays={len(jax.live_arrays())}")
@@ -1457,6 +1609,16 @@ def run_train_mode(
 
 def main():
     args = parse_args()
+    if args.train_keep_best and (args.run_mode != 'train' or args.loss_mode != 'glorys_target'):
+        raise ValueError('--train-keep-best requires GLORYS training with per-variable loss terms')
+    if args.glorys_sampled_interpolation and not (args.basin_mean_loss and args.glorys_linear_interpolation):
+        raise ValueError('--glorys-sampled-interpolation requires basin loss and --glorys-linear-interpolation')
+    if args.basin_levels < 0:
+        raise ValueError('--basin-levels must be nonnegative; 0 selects all levels')
+    if not np.isfinite(args.basin_pattern_lambda) or args.basin_pattern_lambda < 0:
+        raise ValueError('Basin pattern lambda must be finite and nonnegative')
+    if args.basin_pattern_lambda and not args.basin_mean_loss:
+        raise ValueError('--basin-pattern-lambda requires --basin-mean-loss')
     if args.basin_mean_loss and (args.loss_mode != "glorys_target" or any(k not in ('temp', 'salt') for k in args.keys_loss)):
         raise ValueError('--basin-mean-loss requires GLORYS targets and temp/salt loss keys')
     if args.balance_loss_terms and (args.run_mode != "train" or args.loss_mode != "glorys_target"):
@@ -1854,6 +2016,7 @@ def main():
         results["loss_mode"] = args.loss_mode
         results["loss_reduction"] = args.loss_reduction
         results["keys_loss"] = list(args.keys_loss)
+        results["basin_pattern_lambda"] = args.basin_pattern_lambda
         results["basin_mean_loss"] = args.basin_mean_loss
         results["basin_levels"] = args.basin_levels if args.basin_mean_loss else None
         results["basin_loss_metadata"] = getattr(args, "basin_loss_metadata", None)

@@ -29,6 +29,8 @@ def checkpoint_model_kwargs(checkpoint, defaults):
     if checkpoint is None:
         return kwargs
 
+    kwargs["surface_only"] = checkpoint.get("surface_only", False)
+    kwargs["residual_blocks"] = checkpoint.get("residual_blocks", 0)
     key_map = {
         "hidden_dim_nn": "hidden_dim",
         "depth_nn": "depth",

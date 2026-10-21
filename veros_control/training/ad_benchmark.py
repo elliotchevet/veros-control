@@ -124,6 +124,8 @@ def parse_args():
             "and enables input normalization."
         ),
     )
+    parser.add_argument("--surface-only", action="store_true", help="Keep full-profile inputs and predict corrections only at the surface.")
+    parser.add_argument("--residual-blocks", type=int, default=0, help="Residual blocks; 0 selects the original MLP. --depth sets layers per block.")
     parser.add_argument("--hidden-dim", type=int, default=64)
     parser.add_argument("--depth", type=int, default=2)
     parser.add_argument("--use-lon-lat", action="store_true")
@@ -371,11 +373,16 @@ def init_simulation(
     glorys_time_index=0,
     glorys_month_index=0,
     glorys_start_month=1,
+    era5_forcing_file=None,
+    setup_forcing_window=False,
 ):
     if restart_file is not None and glorys_file is not None:
         raise ValueError("Use either --restart-file or --glorys-file, not both")
 
     simulation = GlobalOneDegreeSetup(skip_setup_initial_conditions=glorys_file is not None)
+    if era5_forcing_file is not None:
+        simulation.era5_forcing_file = str(era5_forcing_file)
+    simulation.setup_forcing_window = setup_forcing_window
     simulation.setup()
     disable_diagnostics(simulation)
 
@@ -416,6 +423,7 @@ def init_nn_benchmark(simulation, args):
     defaults = {
         "hidden_dim": args.hidden_dim,
         "depth": args.depth,
+        "residual_blocks": getattr(args, "residual_blocks", 0),
         "nz": settings.nz,
         "nb_profiles": 4,
         "init_eps": 1.0,
@@ -427,11 +435,15 @@ def init_nn_benchmark(simulation, args):
         "num_mlps": args.num_mlps,
         "TS": args.TS,
         "zero_output_init": args.zero_output_init,
+        "surface_only": getattr(args, "surface_only", False),
     }
     model_kwargs = checkpoint_model_kwargs(checkpoint, defaults)
     model_kwargs["nz"] = settings.nz
     model_kwargs["init_eps"] = 1.0
     model_kwargs["train_epsilon"] = False
+    if getattr(args, "surface_only", False) and not model_kwargs.get("surface_only", False):
+        raise ValueError("Surface-only training cannot load a full-depth checkpoint")
+    args.surface_only = bool(model_kwargs.get("surface_only", False))
     args.use_forcings = bool(model_kwargs.get("use_forcings", args.use_forcings))
     with settings.unlock():
         settings.use_forcings = args.use_forcings

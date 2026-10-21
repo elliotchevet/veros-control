@@ -117,7 +117,7 @@ def _title_bits(checkpoint):
     return title_bits
 
 
-def plot_history(rows, checkpoint, output_path):
+def plot_history(rows, checkpoint, output_path, baseline=None):
     if not rows:
         raise ValueError("Checkpoint has no train_history or losses to plot")
 
@@ -144,6 +144,9 @@ def plot_history(rows, checkpoint, output_path):
     ax.set_xlabel("Update")
     ax.set_ylabel("Loss")
     ax.set_title("Training Loss")
+    if baseline is not None:
+        ax.axhline(baseline["normalized_loss"], color="black", linestyle="--", label="No NN (endpoint)")
+        ax.legend()
     ax.grid(True, alpha=0.3)
 
     if has_extra:
@@ -190,7 +193,7 @@ def plot_history(rows, checkpoint, output_path):
     plt.close(fig)
 
 
-def plot_loss_terms(rows, checkpoint, output_path):
+def plot_loss_terms(rows, checkpoint, output_path, baseline=None):
     loss_term_keys = _loss_term_keys(rows)
     if not loss_term_keys:
         return False
@@ -202,6 +205,11 @@ def plot_loss_terms(rows, checkpoint, output_path):
         for key in normalized_keys:
             normalized_ax.plot(updates, _array_from_rows(rows, key), marker="o",
                                label=key.removeprefix("normalized_loss_term_"))
+        if baseline is not None:
+            for line in list(normalized_ax.lines):
+                key = line.get_label()
+                normalized_ax.axhline(baseline['normalized_terms'][key], color=line.get_color(),
+                                      linestyle='--', label=f'{key}: no NN')
         normalized_ax.set(xlabel="Update", ylabel="Loss / initial loss", title="Normalized Loss Terms")
         normalized_ax.legend()
         normalized_ax.grid(True, alpha=0.3)
@@ -228,6 +236,10 @@ def plot_loss_terms(rows, checkpoint, output_path):
     ax.set_xlabel("Update")
     ax.set_ylabel("Loss contribution")
     ax.set_title("Temp / Salt Loss Terms")
+    if baseline is not None:
+        for line in list(ax.lines):
+            key = line.get_label()
+            ax.axhline(baseline['terms'][key], color=line.get_color(), linestyle='--', label=f'{key}: no NN')
     ax.legend()
     ax.grid(True, alpha=0.3)
 
