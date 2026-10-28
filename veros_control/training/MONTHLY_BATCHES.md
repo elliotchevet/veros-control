@@ -49,5 +49,14 @@ losses; a fixed reference panel selects best checkpoints. Worker recycling and
 targeted shutdown preserve coordinator-owned optimizer state.
 
 `--monthly-baseline-normalization` calibrates fixed outer T/S denominators from
-all twelve no-NN monthly initial states at each horizon; stage resume restores
-these denominators. It requires the twelve-month cyclic-target configuration.
+the selected no-NN monthly initial states at each horizon; stage resume restores
+these denominators. It requires surface-only training with monthly fused validation.
+
+
+Use `--training-months 1` to restrict training and normalization calibration to
+January, or supply another explicit subset. With January only, also select
+`--initial-state-batch-size 1 --checkpoint-months 1`. If the flag is omitted,
+all available initial months are retained. Selected months must be distinct and
+available, and the fixed checkpoint months must belong to the selected set.
+The checkpoint records the selected dataset; resume rejects a changed selection.
+This selection does not change the six-basin geographical definition.

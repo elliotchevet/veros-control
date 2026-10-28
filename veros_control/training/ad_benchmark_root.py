@@ -1286,11 +1286,16 @@ def run_train_mode(
     candidate_validator = ad_train.validate if batch_factory is not None else getattr(args, "candidate_validator", None)
     lr_backoff = getattr(args, "lr_backoff", 1.0)
     loss_backtracking = getattr(args, "loss_backtracking", False)
+    loss_halving_continue = getattr(args, "loss_halving_continue", False)
+    if loss_halving_continue and not loss_backtracking:
+        raise ValueError("Loss halving requires candidate loss scoring")
     min_learning_rate = getattr(args, "train_min_lr", 0.)
     decrease_start = getattr(args, "lr_decrease_start_epoch", 1)
     lr_backoff = max(lr_backoff, min_learning_rate / args.train_lr)
     clean_updates = getattr(args, "lr_clean_updates", 0)
-    if loss_backtracking:
+    if loss_halving_continue:
+        print(f"LR scheduler: keep finite stable update; halve NEXT LR once on failed same-batch loss test; start epoch={decrease_start}; floor={min_learning_rate:g}; recover 1.5 after 10 consecutive improvements, max={args.train_lr:g}; no retries", flush=True)
+    elif loss_backtracking:
         print(f'Loss-based LR backtracking enabled: maximum={args.train_lr:g}, initial={args.train_lr * lr_backoff:g}; minimum={min_learning_rate:g}, decrease test from epoch={decrease_start}; recovery 1.5 after 5 clean updates', flush=True)
     if loss_backtracking and candidate_validator is None:
         raise ValueError('Loss backtracking requires candidate validation')
@@ -1412,13 +1417,25 @@ def run_train_mode(
                 )
             params_after_update, updates, current_lr, candidate_retries, candidate_report = backtrack_candidate(
                 params, raw_updates, scheduled_lr * lr_backoff, candidate_validator,
-                max_retries=getattr(args, "candidate_max_retries", 8),
+                max_retries=0 if loss_halving_continue else getattr(args, "candidate_max_retries", 8),
                 score=candidate_score if loss_backtracking else None,
                 reference_loss=float(loss) if loss_backtracking else None,
                 min_learning_rate=min_learning_rate,
-                enforce_loss_decrease=update_idx + 1 >= decrease_start,
+                enforce_loss_decrease=(not loss_halving_continue and update_idx + 1 >= decrease_start),
             )
-            if loss_backtracking:
+            if loss_halving_continue:
+                from veros_control.training.stability import loss_test_next_learning_rate
+                next_lr, scheduler_report = loss_test_next_learning_rate(
+                    current_lr, float(loss), candidate_report['loss'], update_idx + 1,
+                    min_rate=min_learning_rate, max_rate=scheduled_lr, clean_updates=clean_updates,
+                    start_epoch=decrease_start)
+                candidate_report.update(scheduler_report)
+                lr_backoff = next_lr / scheduled_lr
+                clean_updates = scheduler_report["lr_clean_updates"]
+                args.lr_clean_updates = clean_updates
+                test = 'warmup' if not scheduler_report['loss_test_active'] else ('pass' if scheduler_report['loss_test_passed'] else 'fail')
+                print(f"  LR epoch={update_idx + 1} test={test} before={float(loss):.6g} after={candidate_report['loss']:.6g} update=KEPT applied={current_lr:.6g} next={next_lr:.6g} action={scheduler_report['lr_action']} improving_streak={clean_updates}/10 retries=0", flush=True)
+            elif loss_backtracking:
                 from veros_control.training.stability import recover_learning_rate
                 # Use the actual accepted rate: the floor can truncate a halving.
                 lr_backoff = current_lr / scheduled_lr
@@ -1537,6 +1554,11 @@ def run_train_mode(
                 "selected_grad": selected_grad,
                 **({"candidate_retries": candidate_retries, "candidate_validation": candidate_report,
                     "lr_backoff": lr_backoff} if candidate_validator is not None else {}),
+                **({"next_lr": candidate_report['next_lr'],
+                    "lr_action": candidate_report['lr_action'],
+                    "lr_clean_updates": clean_updates,
+                    "loss_test_active": candidate_report['loss_test_active'],
+                    "loss_test_passed": candidate_report['loss_test_passed']} if loss_halving_continue else {}),
                 "loss_terms": loss_term_values,
                 **({"normalized_loss_terms": normalized_loss_terms} if args.balance_loss_terms else {}),
                 "tendency_ratio_rms": {

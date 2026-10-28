@@ -14,12 +14,13 @@ import shutil
 import sys
 
 parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+parser.add_argument('--training-months', type=int, nargs='+', default=None)
 parser.add_argument('--monthly-initial-states', default=None, metavar='ASSET_DIR')
 parser.add_argument('--initial-state-batch-size', type=int, default=3)
 parser.add_argument('--monthly-parallel-workers', type=int, default=0)
 parser.add_argument('--monthly-worker-nodes', action='store_true')
 parser.add_argument('--monthly-fused-validation', action='store_true')
-parser.add_argument('--monthly-baseline-normalization', action='store_true', help='Normalize each term by its no-NN mean over all 12 months at this horizon')
+parser.add_argument('--monthly-baseline-normalization', action='store_true', help='Normalize each term by its no-NN mean over selected training months at this horizon')
 parser.add_argument('--checkpoint-score-every', type=int, default=1)
 parser.add_argument('--initial-state-seed', type=int, default=0)
 parser.add_argument('--checkpoint-months', type=int, nargs='+', default=[1, 5, 9])
@@ -30,6 +31,7 @@ parser.add_argument('--resume-stage', action='store_true')
 parser.add_argument('--depth-loss-stats', default=None)
 parser.add_argument('--filtered-loss', action='store_true')
 parser.add_argument('--loss-backtracking', action='store_true')
+parser.add_argument('--loss-halving-continue', action='store_true', help='Keep stable updates even on loss increase; halve next LR once; recover 50% after 10 consecutive improvements')
 parser.add_argument('--train-min-lr', type=float, default=None)
 parser.add_argument('--lr-decrease-start-epoch', type=int, default=None)
 parser.add_argument('--restart-stage-lr', action='store_true', help='Reset LR and epoch history while preserving source weights and Adam state')
@@ -196,6 +198,8 @@ def parse_args():
     cfg = original_parse()
     if scales.resume_stage and (cfg.train_overwrite or cfg.nn_checkpoint is None or Path(cfg.nn_checkpoint).resolve() != Path(scales.curriculum_source).resolve()):
         raise ValueError('Resume requires the same NN checkpoint and forbids overwrite')
+    if stage_source and stage_source.get('error_regions_sha256'):
+        raise ValueError('Only original six-basin checkpoints are supported; learned-region loss is not available')
     if stage_source and stage_source.get('monthly_initial_states') is not None and stage_source['monthly_initial_states'] != monthly_config:
         raise ValueError('Monthly curriculum continuation must preserve dataset and sampling settings')
     cfg.monthly_baseline_normalization = scales.monthly_baseline_normalization
@@ -245,6 +249,9 @@ def parse_args():
         if not cfg.glorys_sampled_interpolation or cfg.sample_steps != depth_loss['sample_steps']:
             raise ValueError('Filtered calibration requires matching sampled interpolation')
         print(f'Filtered loss enabled: {cfg.spatial_loss_filter}', flush=True)
+    cfg.loss_halving_continue = scales.loss_halving_continue
+    if scales.loss_halving_continue and not scales.loss_backtracking:
+        raise ValueError("--loss-halving-continue requires --loss-backtracking for scoring")
     cfg.loss_backtracking = scales.loss_backtracking
     cfg.lr_clean_updates = 0
     if scales.loss_backtracking and (not scales.validate_candidates or not cfg.train_keep_best or cfg.train_lr_final is not None):
@@ -288,6 +295,8 @@ def stage_init(cfg, checkpoint_path, params, optimizer):
                 correction_bounds_per_hour=scales.max_correction_per_hour).items():
             if stage_source.get(key) != expected:
                 raise ValueError(f'Curriculum checkpoint differs in {key}')
+        if bool(stage_source.get('loss_halving_continue', False)) != scales.loss_halving_continue:
+            raise ValueError('Curriculum must preserve loss-halving scheduler mode')
         if bool(stage_source.get('loss_backtracking', False)) != scales.loss_backtracking:
             raise ValueError('Curriculum must preserve loss backtracking mode')
         if stage_source.get('loss_term_denominators') != cfg.loss_term_denominators and not scales.monthly_baseline_normalization:
@@ -298,6 +307,8 @@ def stage_init(cfg, checkpoint_path, params, optimizer):
             expected = dict(rtol=1e-8, atol=1e-10, recovery_factor=1.5, recovery_interval=5, max_lr=cfg.train_lr)
             if cfg.surface_only or cfg.train_min_lr or cfg.lr_decrease_start_epoch != 1:
                 expected.update(min_lr=cfg.train_min_lr, decrease_start_epoch=cfg.lr_decrease_start_epoch)
+            if scales.loss_halving_continue:
+                expected.update(mode='keep_update_halve_next', recovery_factor=1.5, recovery_interval=10, max_retries=0)
             if stage_source.get('loss_backtracking_settings') != expected:
                 raise ValueError('Resume must preserve LR recovery settings')
             cfg.lr_clean_updates = stage_source.get('lr_clean_updates', 0)
@@ -315,11 +326,18 @@ previous_payload = m._train_checkpoint_payload
 
 def stage_payload(*args, **kwargs):
     result = previous_payload(*args, **kwargs)
+    restoring_metadata = os.environ.get('SURFACE_RESTORING_METADATA')
+    if restoring_metadata:
+        import json
+        result['restoring_configuration'] = json.loads(Path(restoring_metadata).read_text())
+    result['loss_halving_continue'] = scales.loss_halving_continue
     result['loss_backtracking'] = scales.loss_backtracking
     result['lr_clean_updates'] = getattr(active_cfg, 'lr_clean_updates', 0)
     result['loss_backtracking_settings'] = dict(rtol=1e-8, atol=1e-10, recovery_factor=1.5, recovery_interval=5, max_lr=active_cfg.train_lr) if scales.loss_backtracking else None
     if result['loss_backtracking_settings'] is not None and (active_cfg.surface_only or active_cfg.train_min_lr or active_cfg.lr_decrease_start_epoch != 1):
         result['loss_backtracking_settings'].update(min_lr=active_cfg.train_min_lr, decrease_start_epoch=active_cfg.lr_decrease_start_epoch)
+    if scales.loss_halving_continue:
+        result['loss_backtracking_settings'].update(mode='keep_update_halve_next', recovery_factor=1.5, recovery_interval=10, max_retries=0)
     result['monthly_execution'] = dict(workers=scales.monthly_parallel_workers, worker_nodes=scales.monthly_worker_nodes, fused_validation=scales.monthly_fused_validation, checkpoint_score_every=scales.checkpoint_score_every)
     result['monthly_baseline_normalization'] = scales.monthly_baseline_normalization
     result['monthly_baseline_calibration'] = getattr(active_cfg, 'monthly_baseline_calibration', None)
@@ -339,6 +357,10 @@ monthly_pairs = monthly_config = None
 if scales.monthly_initial_states:
     from veros_control.training.monthly_batches import monthly_files, batch_months
     monthly_pairs = monthly_files(scales.monthly_initial_states, scales.cyclic_glorys_targets)
+    if scales.training_months is not None:
+        if not scales.training_months or len(set(scales.training_months)) != len(scales.training_months) or not set(scales.training_months) <= set(monthly_pairs):
+            raise ValueError('Invalid training months')
+        monthly_pairs = {month: monthly_pairs[month] for month in sorted(scales.training_months)}
     batch_months(tuple(monthly_pairs), scales.initial_state_batch_size, scales.initial_state_seed, 0)
     if not set(scales.checkpoint_months) <= set(monthly_pairs) or len(set(scales.checkpoint_months)) != len(scales.checkpoint_months):
         raise ValueError('Invalid fixed checkpoint months')

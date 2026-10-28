@@ -160,12 +160,12 @@ class MonthlyRollouts:
         """One forward rollout per month; preserve training params and Adam state."""
         import json
         months = tuple(sorted(self.files))
-        if months != tuple(range(1, 13)):
-            raise ValueError('Baseline normalization requires all twelve months')
+        if not months:
+            raise ValueError('Baseline normalization requires training months')
         zero_params = self.m.jax.tree_util.tree_map(self.m.jnp.zeros_like, params)
         options = dict(options, forward_only=True, return_aux=True)
         started = time.monotonic()
-        print(f'BASELINE calibration: horizon={self.steps} no-NN months={months}; 12 forward rollouts', flush=True)
+        print(f'BASELINE calibration: horizon={self.steps} no-NN months={months}; {len(months)} forward rollouts', flush=True)
         if self.workers is not None:
             values = self.workers.map('g', months, zero_params, options, self.loss_term_denominators)
         else:
@@ -174,7 +174,7 @@ class MonthlyRollouts:
                 with self.member(month) as ad:
                     values.append(self.m.jax.device_get(ad.g(self.simulation.state, zero_params, **options)))
         terms = np.asarray([value[1] for value in values], dtype=float)
-        if terms.shape != (12, 2) or not np.all(np.isfinite(terms)) or np.any(terms <= 0):
+        if terms.shape != (len(months), 2) or not np.all(np.isfinite(terms)) or np.any(terms <= 0):
             raise ValueError(f'Invalid no-NN baseline terms: {terms}')
         denominators = dict(zip(('temp', 'salt'), map(float, terms.mean(axis=0))))
         calibration = dict(horizon=self.steps, months=list(months), no_nn=True,
@@ -191,7 +191,7 @@ class MonthlyRollouts:
         self.cfg.monthly_baseline_calibration = calibration
         self.loss_term_denominators = self.m.jnp.asarray(list(denominators.values()))
         self.cached_candidate = None
-        self.rollout_counts['calibration'] = 12
+        self.rollout_counts['calibration'] = len(months)
         print(f'BASELINE fixed denominators: {denominators}; no-NN mean relative terms: temp=1 salt=1; '
               f'wall={calibration["wall_seconds"]:.2f}s; saved={path}', flush=True)
         return calibration

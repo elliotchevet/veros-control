@@ -40,14 +40,22 @@ class MonthlyTests(unittest.TestCase):
                 m.monthly_clock('dec', 'jan', year)
 
     def test_no_nn_calibration_uses_all_months_and_preserves_weights(self):
+        self.check_no_nn_calibration(tuple(range(1, 13)))
+
+    def test_no_nn_calibration_uses_only_selected_training_months(self):
+        self.check_no_nn_calibration((1,))
+        self.check_no_nn_calibration((1, 5, 9))
+
+    def check_no_nn_calibration(self, months):
+        expected = np.array([np.mean(months), 4*np.mean(months)])
         import jax
         import jax.numpy as jnp
         with tempfile.TemporaryDirectory() as directory:
             obj = object.__new__(m.MonthlyRollouts)
             obj.m = SimpleNamespace(jax=jax, jnp=jnp)
-            obj.files = {month: None for month in range(1, 13)}
+            obj.files = {month: None for month in months}
             obj.steps = 81
-            obj.months = (2, 8, 6)
+            obj.months = tuple(months[:3])
             obj.single = SimpleNamespace(loss_term_denominators=jnp.ones(2))
             obj.cfg = SimpleNamespace(train_output_file=str(Path(directory)/'train.pkl'), sample_steps=27,
                                       monthly_fused_validation=True)
@@ -60,15 +68,16 @@ class MonthlyTests(unittest.TestCase):
                         assert options['forward_only'] and options['return_aux']
                         return [(0., np.array([month, 4*month])) for month in months]
                     # The fused candidate scorer must receive the new fixed scales.
-                    np.testing.assert_allclose(denominators, [6.5, 26.])
-                    return [(True, {'loss_terms':[6.5, 26.]}) for month in months]
+                    np.testing.assert_allclose(denominators, expected)
+                    return [(True, {'loss_terms':expected.tolist()}) for month in months]
             obj.workers = Workers()
             params = {'w':jnp.array([2., -3.])}
             result = obj.calibrate_no_nn(params)
             np.testing.assert_array_equal(params['w'], [2., -3.])
-            self.assertEqual(obj.workers.months, tuple(range(1,13)))
-            self.assertEqual(obj.months, (2,8,6))
-            self.assertEqual(result['denominators'], {'temp':6.5, 'salt':26.})
+            self.assertEqual(obj.workers.months, months)
+            self.assertEqual(obj.months, tuple(months[:3]))
+            self.assertEqual(result['denominators'], dict(zip(('temp','salt'), expected)))
+            self.assertEqual(obj.rollout_counts['calibration'], len(months))
             self.assertEqual(obj.cfg.monthly_baseline_calibration, result)
             self.assertEqual(json.loads((Path(directory)/'no_nn_baseline.json').read_text()), result)
             obj.rollout_counts['candidate'] = 0

@@ -130,4 +130,62 @@ class StabilityTests(unittest.TestCase):
         self.assertEqual(s.recover_learning_rate(.5,0,4),(.75,0))
         self.assertEqual(s.recover_learning_rate(1.,0,4),(1.,0))
 
+    def test_keep_worse_update_halve_next_only_once(self):
+        p = {'x': jnp.array(1.)}
+        seen = []
+        def validate(candidate):
+            seen.append(float(candidate['x']))
+            return True, {}
+        candidate, updates, rate, retries, report = s.backtrack_candidate(
+            p, {'x': jnp.array(1000.)}, 1e-3, validate, max_retries=0,
+            score=lambda c: (float(c['x']**2), [float(c['x']**2)]),
+            reference_loss=1., min_learning_rate=1e-5, enforce_loss_decrease=False)
+        self.assertEqual(seen, [2.])
+        self.assertEqual(float(candidate['x']), 2.)
+        self.assertEqual(float(p['x']), 1.)
+        self.assertEqual(retries, 0)
+        next_rate, decision = s.loss_test_next_learning_rate(rate, 1., report['loss'], 20)
+        self.assertEqual(rate, 1e-3)
+        self.assertEqual(next_rate, 5e-4)
+        self.assertTrue(decision['update_kept'])
+        self.assertFalse(decision['loss_test_passed'])
+
+    def test_halving_warmup_floor_and_recovery(self):
+        rate, report = s.loss_test_next_learning_rate(1e-3, 1., 2., 19)
+        self.assertEqual(rate, 1e-3)
+        self.assertFalse(report['loss_test_active'])
+        for epoch in range(20, 35):
+            previous = rate
+            rate, _ = s.loss_test_next_learning_rate(rate, 1., 1000., epoch)
+            self.assertGreaterEqual(rate, previous / 2)
+            self.assertEqual(rate, max(1e-5, previous / 2))
+        self.assertEqual(rate, 1e-5)
+        clean = 0
+        for epoch in range(35, 45):
+            rate, report = s.loss_test_next_learning_rate(rate, 1., .5, epoch, clean_updates=clean)
+            clean = report['lr_clean_updates']
+            self.assertAlmostEqual(rate, 1e-5 if epoch < 44 else 1.5e-5)
+            self.assertTrue(report['loss_test_passed'])
+        self.assertEqual(clean, 0)
+        rate, report = s.loss_test_next_learning_rate(9e-4, 1., .5, 50, clean_updates=9)
+        self.assertEqual(rate, 1e-3)
+        rate, report = s.loss_test_next_learning_rate(rate, 1., 2., 51, clean_updates=9)
+        self.assertEqual(rate, 5e-4)
+        self.assertEqual(report['lr_clean_updates'], 0)
+        rate, report = s.loss_test_next_learning_rate(rate, 1., 1., 52, clean_updates=9)
+        self.assertEqual(rate, 5e-4)
+        self.assertEqual(report['lr_clean_updates'], 0)
+        with self.assertRaises(ValueError):
+            s.loss_test_next_learning_rate(rate, 1., np.nan, 45)
+
+    def test_halving_mode_still_rejects_unsafe_candidate_once(self):
+        seen = []
+        def validate(candidate):
+            seen.append(candidate)
+            return False, {'max_cfl': 5.}
+        with self.assertRaises(FloatingPointError):
+            s.backtrack_candidate({'x': jnp.array(1.)}, {'x': jnp.array(1.)},
+                1e-3, validate, max_retries=0, enforce_loss_decrease=False)
+        self.assertEqual(len(seen), 1)
+
 if __name__=='__main__':unittest.main()
