@@ -11,6 +11,8 @@ class ModelConfig:
     depth: int = 2
     use_lon_lat: bool = True
     use_forcings: bool = True
+    residual_blocks: int = 0
+    surface_only: bool = False
     zero_output_init: bool = True
 
 
@@ -20,6 +22,8 @@ class VerticalCorrectionMLP(nn.Module):
     depth: int = 2
     use_lon_lat: bool = True
     use_forcings: bool = True
+    residual_blocks: int = 0
+    surface_only: bool = False
     zero_output_init: bool = True
 
     @nn.compact
@@ -31,10 +35,24 @@ class VerticalCorrectionMLP(nn.Module):
             lon, lat = jnp.deg2rad(coordinates)
             encoded = jnp.stack((jnp.sin(lon), jnp.cos(lon), jnp.sin(lat), jnp.cos(lat)))
             x = jnp.concatenate((x, encoded.reshape(-1)))
-        for _ in range(self.depth):
-            x = nn.relu(nn.Dense(self.hidden_dim)(x))
+        if self.residual_blocks < 0 or self.depth < 1 or self.hidden_dim < 1:
+            raise ValueError('Invalid residual block count, depth, or width')
+        if self.residual_blocks:
+            x = nn.Dense(self.hidden_dim, name='input_projection_0')(x)
+            for block in range(self.residual_blocks):
+                residual = x
+                for layer in range(self.depth):
+                    residual = nn.Dense(self.hidden_dim, name=f'block_0_{block}_{layer}')(residual)
+                    if layer < self.depth - 1:
+                        residual = nn.relu(residual)
+                x = x + residual
+        else:
+            for _ in range(self.depth):
+                x = nn.relu(nn.Dense(self.hidden_dim)(x))
         options = dict(kernel_init=nn.initializers.zeros, bias_init=nn.initializers.zeros) if self.zero_output_init else {}
-        return nn.Dense(self.nz * 4, **options)(x).reshape(self.nz, 4)
+        levels = 1 if self.surface_only else self.nz
+        output = nn.Dense(levels * 4, **options)(x).reshape(levels, 4)
+        return jnp.pad(output, ((self.nz - levels, 0), (0, 0)))
 
 
 def initialize(config, nz, seed):

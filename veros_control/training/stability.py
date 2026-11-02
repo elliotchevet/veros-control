@@ -1,4 +1,4 @@
-"""Feasibility checks and conservative step-size backtracking, not loss descent."""
+"""Every-step physical feasibility checks; optimizer acceptance lives in scheduler.py."""
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -54,14 +54,3 @@ def make_validator(rollout,n_steps,max_cfl):
             values = np.asarray(jax.device_get(compiled(params)))
         return valid_metrics(values,max_cfl),report_metrics(values)
     return validate
-
-
-def backtrack(params,direction,rate,validate,retries):
-    for attempt in range(retries+1):
-        candidate = jax.tree_util.tree_map(lambda p,d:p+rate*d,params,direction)
-        finite = all(np.isfinite(np.asarray(x)).all() for x in jax.tree_util.tree_leaves(candidate))
-        valid,report = validate(candidate) if finite else (False,{'nonfinite_parameters':True})
-        print(f'candidate lr={rate:g} valid={valid}: {report}',flush=True)
-        if valid:return candidate,rate,report
-        rate *= .5
-    raise FloatingPointError('No feasible candidate; saved checkpoints preserved')

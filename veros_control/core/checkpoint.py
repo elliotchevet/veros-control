@@ -92,7 +92,8 @@ def model_from_checkpoint(checkpoint, nz):
             raise ValueError('Checkpoint uses an experimental architecture that is not supported')
         model_config = ModelConfig(hidden_dim=checkpoint.get('hidden_dim_nn',64),depth=checkpoint.get('depth_nn',2),
             use_lon_lat=checkpoint.get('use_lon_lat',False),use_forcings=checkpoint.get('use_forcings',False),
-            zero_output_init=checkpoint.get('zero_output_init',False))
+            zero_output_init=checkpoint.get('zero_output_init',False),
+            residual_blocks=checkpoint.get('residual_blocks',0),surface_only=checkpoint.get('surface_only',False))
         correction = CorrectionConfig(tracer_epsilon=checkpoint.get('tracer_epsilon',checkpoint.get('epsilon',1e-6)),
             momentum_epsilon=checkpoint.get('momentum_epsilon',checkpoint.get('epsilon',1e-6)),
             bounds_per_hour=checkpoint.get('correction_bounds_per_hour'),depth_taper=checkpoint.get('correction_depth_taper'))

@@ -1,0 +1,11 @@
+{
+  "output": "../outputs/train_diags/paired_30years",
+  "setup": "global_ocean/setup.py:create_simulation",
+  "initial": "../data/glorys_initial.nc",
+  "target": "../data/glorys_next.nc",
+  "checkpoint": "../outputs/training/surface/window_243/best.pkl",
+  "years": 30,
+  "start_year": 1993,
+  "max_cfl": 2.0,
+  "stop_on_invalid": true
+}

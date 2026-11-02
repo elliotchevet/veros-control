@@ -1,0 +1,144 @@
+{
+  "output": "../outputs/training/monthly_surface",
+  "setup": "global_ocean/setup.py:create_simulation",
+  "initial": "../data/GLORYS12_1deg_199301_processed.nc",
+  "target": "../data/GLORYS12_1deg_199302_processed.nc",
+  "n_steps": 243,
+  "sample_steps": 27,
+  "updates": 150,
+  "learning_rate": 0.001,
+  "reference_hours": 720,
+  "normalization": "none",
+  "model": {
+    "hidden_dim": 128,
+    "depth": 2,
+    "use_lon_lat": true,
+    "use_forcings": true,
+    "zero_output_init": true,
+    "residual_blocks": 3,
+    "surface_only": true
+  },
+  "correction": {
+    "tracer_epsilon": 1e-06,
+    "momentum_epsilon": 1e-07,
+    "momentum": true,
+    "bounds_per_hour": [
+      0.05,
+      0.05,
+      0.005,
+      0.005
+    ],
+    "depth_taper": null
+  },
+  "loss": {
+    "mode": "basin",
+    "levels": 1,
+    "pattern_lambda": 1,
+    "balance": true,
+    "interpolation": "sampled",
+    "normalization": "no_nn",
+    "spatial_filter": {
+      "version": "wet_helmholtz_v1",
+      "hours": [
+        27.0,
+        81.0,
+        243.0
+      ],
+      "wavelengths_km": [
+        0.0,
+        400.0,
+        800.0
+      ],
+      "raw_fraction": 0.1,
+      "solver_tolerance": 1e-08,
+      "solver_maxiter": 256
+    }
+  },
+  "curriculum": [
+    {
+      "n_steps": 27,
+      "updates": 150
+    },
+    {
+      "n_steps": 81,
+      "updates": 100
+    },
+    {
+      "n_steps": 243,
+      "updates": 50
+    }
+  ],
+  "scheduler": {
+    "mode": "keep_update",
+    "min_rate": 1e-05,
+    "start_update": 20
+  },
+  "batch_size": 3,
+  "checkpoint_months": [
+    1,
+    5,
+    9
+  ],
+  "initial_states": [
+    {
+      "month": 1,
+      "initial": "../data/GLORYS12_1deg_199301_processed.nc",
+      "target": "../data/GLORYS12_1deg_199302_processed.nc"
+    },
+    {
+      "month": 2,
+      "initial": "../data/GLORYS12_1deg_199302_processed.nc",
+      "target": "../data/GLORYS12_1deg_199303_processed.nc"
+    },
+    {
+      "month": 3,
+      "initial": "../data/GLORYS12_1deg_199303_processed.nc",
+      "target": "../data/GLORYS12_1deg_199304_processed.nc"
+    },
+    {
+      "month": 4,
+      "initial": "../data/GLORYS12_1deg_199304_processed.nc",
+      "target": "../data/GLORYS12_1deg_199305_processed.nc"
+    },
+    {
+      "month": 5,
+      "initial": "../data/GLORYS12_1deg_199305_processed.nc",
+      "target": "../data/GLORYS12_1deg_199306_processed.nc"
+    },
+    {
+      "month": 6,
+      "initial": "../data/GLORYS12_1deg_199306_processed.nc",
+      "target": "../data/GLORYS12_1deg_199307_processed.nc"
+    },
+    {
+      "month": 7,
+      "initial": "../data/GLORYS12_1deg_199307_processed.nc",
+      "target": "../data/GLORYS12_1deg_199308_processed.nc"
+    },
+    {
+      "month": 8,
+      "initial": "../data/GLORYS12_1deg_199308_processed.nc",
+      "target": "../data/GLORYS12_1deg_199309_processed.nc"
+    },
+    {
+      "month": 9,
+      "initial": "../data/GLORYS12_1deg_199309_processed.nc",
+      "target": "../data/GLORYS12_1deg_199310_processed.nc"
+    },
+    {
+      "month": 10,
+      "initial": "../data/GLORYS12_1deg_199310_processed.nc",
+      "target": "../data/GLORYS12_1deg_199311_processed.nc"
+    },
+    {
+      "month": 11,
+      "initial": "../data/GLORYS12_1deg_199311_processed.nc",
+      "target": "../data/GLORYS12_1deg_199312_processed.nc"
+    },
+    {
+      "month": 12,
+      "initial": "../data/GLORYS12_1deg_199312_processed.nc",
+      "target": "../data/GLORYS12_1deg_199301_processed.nc"
+    }
+  ]
+}

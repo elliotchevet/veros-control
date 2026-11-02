@@ -13,7 +13,7 @@ from veros.core.operators import numpy as npx, update, update_multiply, at
 from jax import lax
 
 from veros_control.control import apply_correction
-from veros_control.core.correction import reset_nn_momentum_sources
+from veros_control.core.rollout import zero_tendency_sources
 from veros_control.data.forcing import plan_forcing_window, local_forcing_indices
 import json
 from pathlib import Path
@@ -239,7 +239,7 @@ class GlobalOneDegreeSetup(VerosSetup):
         forcing_time = float(np.asarray(vs.time + vs.forcing_time_shift)) % model_year_seconds
 
         self._era5_forcing_window = plan_forcing_window(
-            forcing_time, n_steps, settings.dt_tracer, forcing_interval, period_count, margin,
+            forcing_time, n_steps, settings.dt_tracer, forcing_interval, period_count, margin, leading_margin=1,
         )
         length = self._era5_forcing_window["length"]
         self._era5_forcing_cache = {}
@@ -507,7 +507,7 @@ class GlobalOneDegreeSetup(VerosSetup):
 
     @veros_routine
     def set_forcing(self, state):
-        reset_nn_momentum_sources(state)
+        zero_tendency_sources(state)
         vs = state.variables
         settings = state.settings
         n_forcing = 365 * 24 // settings.dt_forcing

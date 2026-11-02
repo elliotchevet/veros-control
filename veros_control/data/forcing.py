@@ -2,16 +2,16 @@
 import math
 
 
-def plan_forcing_window(forcing_time, n_steps, dt, interval, period_count, margin=0):
+def plan_forcing_window(forcing_time, n_steps, dt, interval, period_count, margin=0, leading_margin=0):
     """Include both interpolation records through the rollout endpoint.
 
     Start at the record at or immediately before the initial time. A complete
     annual window also covers rollouts longer than one forcing cycle.
     """
-    if n_steps < 0 or margin < 0 or dt <= 0 or interval <= 0 or period_count < 2:
+    if n_steps < 0 or margin < 0 or leading_margin < 0 or dt <= 0 or interval <= 0 or period_count < 2:
         raise ValueError('Invalid forcing-window duration, margin, or period')
     start_time = forcing_time % (interval * period_count)
-    first = math.floor(start_time / interval)
+    first = math.floor(start_time / interval) - leading_margin
     last = math.floor((start_time + n_steps * dt) / interval)
     length = min(period_count, last - first + 2 + margin)
     return dict(start=first % period_count, length=length, period_count=period_count)

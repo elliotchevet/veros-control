@@ -111,3 +111,25 @@ def load_glorys_state(simulation, filename, time_index=0, month_index=0, config=
             _set_scalar_like(state.variables, "forcing_time_shift", forcing_shift)
 
     return state
+
+
+def monthly_clock(initial, target, model_year_seconds=360.*86400.):
+    """Map Gregorian monthly timestamps to the repeating model-year forcing clock.
+
+    Preserves mid-month offsets; December may target January of the same data
+    year for a cyclic training set, as in main's monthly training workflow.
+    """
+    from datetime import datetime, timedelta
+    import calendar
+    def timestamp(path):
+        with h5netcdf.File(path, 'r') as nc:
+            variable=nc.variables['time']
+            if variable.attrs.get('calendar','standard') not in ('standard','gregorian','proleptic_gregorian'):
+                raise ValueError('Monthly training expects Gregorian input timestamps')
+            unit,origin=variable.attrs['units'].split(' since ')
+            factor={'seconds':1.,'hours':3600.,'days':86400.}[unit]
+            return datetime.fromisoformat(origin)+timedelta(seconds=float(variable[0])*factor)
+    start,end=timestamp(initial),timestamp(target)
+    if end<=start:end=end.replace(year=end.year+1)
+    scale=model_year_seconds/((366. if calendar.isleap(start.year) else 365.)*86400.)
+    return (start-datetime(start.year,1,1)).total_seconds()*scale,(end-start).total_seconds()*scale

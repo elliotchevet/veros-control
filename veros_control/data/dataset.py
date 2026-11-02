@@ -18,17 +18,18 @@ class ReferencePair:
     duration_seconds: float
 
 
-def create_simulation(config):
-    module_name, factory = config.setup.rsplit(':',1)
-    if module_name.endswith('.py'):
-        module_id = '_veros_control_setup_' + hashlib.sha256(str(Path(module_name).resolve()).encode()).hexdigest()[:12]
-        spec = importlib.util.spec_from_file_location(module_id,module_name)
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[module_id] = module
-        spec.loader.exec_module(module)
-    else:
-        module = importlib.import_module(module_name)
-    simulation = getattr(module,factory)()
+def create_simulation(config, simulation=None):
+    if simulation is None:
+        module_name, factory = config.setup.rsplit(':',1)
+        if module_name.endswith('.py'):
+            module_id = '_veros_control_setup_' + hashlib.sha256(str(Path(module_name).resolve()).encode()).hexdigest()[:12]
+            spec = importlib.util.spec_from_file_location(module_id,module_name)
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[module_id] = module
+            spec.loader.exec_module(module)
+        else:
+            module = importlib.import_module(module_name)
+        simulation = getattr(module,factory)()
     if not simulation.state.settings.enable_tempsalt_sources:
         raise ValueError('Setup must enable temperature and salinity sources')
     if config.correction.momentum and not simulation.state.settings.enable_momentum_sources:
@@ -36,6 +37,13 @@ def create_simulation(config):
     initialization = SimpleNamespace(glorys_start_month=config.start_month,
         glorys_month_lengths=(31,28,31,30,31,30,31,31,30,31,30,31))
     simulation.state = load_glorys_state(simulation,config.initial,config.time_index,config=initialization)
+    if getattr(config, 'forcing_time_shift', None) is not None:
+        import jax.numpy as jnp
+        with simulation.state.variables.unlock():
+            if 'forcing_time_shift' in simulation.state.var_meta:
+                simulation.state.variables.forcing_time_shift = jnp.asarray(config.forcing_time_shift)
+            elif config.forcing_time_shift != 0:
+                raise ValueError('Setup needs a forcing_time_shift variable for monthly forcing alignment')
     with simulation.state.settings.unlock():
         simulation.state.settings.use_forcings = config.model.use_forcings
         simulation.state.settings.normalize_inputs = config.normalization != 'none'

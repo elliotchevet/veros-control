@@ -10,8 +10,13 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = ["veros", "jax", "flax", "optax", "numpy", "scipy", "h5netcdf", "matplotlib"]
 
+[project.optional-dependencies]
+diagnostics = ["xarray", "gsw", "cartopy", "pypdf"]
+
 [project.scripts]
 veros-control-train = "veros_control.training.train:main"
+veros-control-train-diags = "veros_control.diagnostics.paired:main"
+veros-control-report = "veros_control.diagnostics.report:main"
 veros-control-evaluate = "veros_control.evaluation.infer:main"
 
 [tool.setuptools.packages.find]

@@ -1,10 +1,10 @@
 {
   "setup": "global_ocean/setup.py:create_simulation",
-  "initial": "../data/glorys_initial.nc",
-  "target": "../data/glorys_next.nc",
+  "initial": "../data/heldout_initial.nc",
+  "target": "../data/heldout_next.nc",
   "reference_hours": 720,
   "output": "../outputs/evaluation/example",
-  "checkpoint": "../outputs/training/example/best.pkl",
+  "checkpoint": "../outputs/training/full_depth/window_243/best.pkl",
   "n_steps": 720,
   "snapshot_every": 24,
   "baseline": true,

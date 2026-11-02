@@ -1,20 +1,22 @@
 {
-  "output": "../outputs/training/example",
+  "output": "../outputs/training/full_depth",
   "setup": "global_ocean/setup.py:create_simulation",
   "initial": "../data/glorys_initial.nc",
   "target": "../data/glorys_next.nc",
   "n_steps": 243,
   "sample_steps": 27,
-  "updates": 80,
-  "learning_rate": 0.0005,
+  "updates": 150,
+  "learning_rate": 0.001,
   "reference_hours": 720,
   "normalization": "none",
   "model": {
-    "hidden_dim": 64,
+    "hidden_dim": 128,
     "depth": 2,
     "use_lon_lat": true,
     "use_forcings": true,
-    "zero_output_init": true
+    "zero_output_init": true,
+    "residual_blocks": 3,
+    "surface_only": false
   },
   "correction": {
     "tracer_epsilon": 1e-06,
@@ -33,6 +35,42 @@
     "levels": 0,
     "pattern_lambda": 1,
     "balance": true,
-    "interpolation": "sampled"
+    "interpolation": "sampled",
+    "normalization": "no_nn",
+    "spatial_filter": {
+      "version": "wet_helmholtz_v1",
+      "hours": [
+        27.0,
+        81.0,
+        243.0
+      ],
+      "wavelengths_km": [
+        0.0,
+        400.0,
+        800.0
+      ],
+      "raw_fraction": 0.1,
+      "solver_tolerance": 1e-08,
+      "solver_maxiter": 256
+    }
+  },
+  "curriculum": [
+    {
+      "n_steps": 27,
+      "updates": 150
+    },
+    {
+      "n_steps": 81,
+      "updates": 100
+    },
+    {
+      "n_steps": 243,
+      "updates": 50
+    }
+  ],
+  "scheduler": {
+    "mode": "keep_update",
+    "min_rate": 1e-05,
+    "start_update": 20
   }
 }
