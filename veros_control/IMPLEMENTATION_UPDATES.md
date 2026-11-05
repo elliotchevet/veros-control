@@ -30,3 +30,11 @@ Since `de6eb9c`:
 The main implementation retains only the original six basins. Experimental
 learned-region/12-basin loss integration and generated experiment artifacts are
 not included. Existing six-basin loss, normalization and filtering are unchanged.
+
+## Dated training and speedups (2026-11-05)
+
+- Optional date features, matched-year forcing, signed evaporation and disabled surface restoring.
+- Persistent authenticated TCP workers and date-independent compiled rollouts, with dynamic targets and fixed-size forcing buffers.
+- Configurable LR recovery interval and stage starting LR; optional rejection of worsening candidates with Adam rollback; inherited loss balancing and resume checks.
+- Six original basins retained. Generated runs, weights and archived snapshots excluded.
+- Validation: 39 focused CPU tests passed, including dynamic target loss/gradient equivalence across dates with a single trace and authenticated TCP round trips. Earlier A100 component benchmark matched original losses/gradients exactly; see training/DATED_PERFORMANCE.md for scope.

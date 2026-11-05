@@ -39,6 +39,7 @@ class VerticalCorrectionMLP(nn.Module):
     use_one_hot: bool = False
     num_mlps: int = 1                     # allowed: 1, 2, or 4
     TS: bool = False                      # if True: use only T,S as input
+    use_date_embedding: bool = False
     use_forcings: bool = False
     zero_output_init: bool = False
     surface_only: bool = False           # full-profile inputs, surface-only outputs
@@ -61,7 +62,8 @@ class VerticalCorrectionMLP(nn.Module):
             raise ValueError("Surface-only corrections cannot use conservative_mixing")
 
         state_features = x[:, :4]
-        forcing_features = x[:, 4:] if self.use_forcings else x[:, 4:4]
+        physical_end = x.shape[-1] - (3 if self.use_date_embedding else 0)
+        forcing_features = x[:, 4:physical_end] if self.use_forcings else x[:, 4:4]
 
         if self.residual_blocks < 0 or self.depth < 1 or self.hidden_dim < 1:
             raise ValueError("Invalid residual block count, depth, or width")
@@ -99,6 +101,8 @@ class VerticalCorrectionMLP(nn.Module):
         for group_idx, group in enumerate(group_idxs):
             # input: always from x_in (T,S if TS=True; else all 4)
             x_group = x_in.reshape(-1)
+            if self.use_date_embedding:
+                x_group = npx.concatenate([x_group, x[-1, -3:]], axis=0)
 
             # add periodic lon/lat features if requested
             if self.use_lon_lat:

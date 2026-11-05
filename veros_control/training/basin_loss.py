@@ -121,7 +121,7 @@ def make_basin_loss(variables, target, keys=('temp', 'salt'), levels=5, pattern_
             initial_fields[key] = jnp.take(jnp.asarray(truth), selected, axis=2)
             initial_means[key] = means(jnp.asarray(truth))
 
-    def terms(state):
+    def terms(state, dynamic_target=None, dynamic_initial=None, dynamic_interval=None):
         result = []
         for key in keys:
             field = getattr(state.variables, key)
@@ -132,6 +132,10 @@ def make_basin_loss(variables, target, keys=('temp', 'salt'), levels=5, pattern_
                 alpha = target_alpha(state)
                 truth_mean = initial_means[key] * (1-alpha) + truth_mean * alpha
                 truth_field = initial_fields[key] * (1-alpha) + truth_field * alpha
+            if dynamic_target is not None:
+                alpha = state.variables.time / dynamic_interval
+                truth = dynamic_initial[key]*(1-alpha)+dynamic_target[key]*alpha
+                truth_mean, truth_field = means(truth), jnp.take(truth, selected, axis=2)
             squared = (means(field) - truth_mean) ** 2
             if pattern_lambda > 0:
                 error = jnp.take(field, selected, axis=2) - truth_field

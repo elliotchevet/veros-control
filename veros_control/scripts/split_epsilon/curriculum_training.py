@@ -14,7 +14,11 @@ import shutil
 import sys
 
 parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+parser.add_argument('--stage-initial-lr', type=float, default=None, help='Starting LR for a restarted stage; train-lr remains the recovery ceiling')
+parser.add_argument('--reject-worsening-updates', action='store_true', help='Roll back parameters and Adam when the same-batch loss test fails')
 parser.add_argument('--training-months', type=int, nargs='+', default=None)
+parser.add_argument('--training-years', type=int, nargs=2, default=None)
+parser.add_argument('--lr-recovery-interval', type=int, default=10)
 parser.add_argument('--monthly-initial-states', default=None, metavar='ASSET_DIR')
 parser.add_argument('--initial-state-batch-size', type=int, default=3)
 parser.add_argument('--monthly-parallel-workers', type=int, default=0)
@@ -31,9 +35,10 @@ parser.add_argument('--resume-stage', action='store_true')
 parser.add_argument('--depth-loss-stats', default=None)
 parser.add_argument('--filtered-loss', action='store_true')
 parser.add_argument('--loss-backtracking', action='store_true')
-parser.add_argument('--loss-halving-continue', action='store_true', help='Keep stable updates even on loss increase; halve next LR once; recover 50% after 10 consecutive improvements')
+parser.add_argument('--loss-halving-continue', action='store_true', help='Keep stable updates even on loss increase; halve next LR once; recover 50% after 5 consecutive improvements')
 parser.add_argument('--train-min-lr', type=float, default=None)
 parser.add_argument('--lr-decrease-start-epoch', type=int, default=None)
+parser.add_argument('--reuse-source-normalization', action='store_true', help='Keep the source window no-NN denominators without recalibration')
 parser.add_argument('--restart-stage-lr', action='store_true', help='Reset LR and epoch history while preserving source weights and Adam state')
 parser.add_argument('--require-normalized-inputs', action='store_true')
 parser.add_argument('--curriculum-denominators', required=True)
@@ -48,6 +53,10 @@ parser.add_argument('--candidate-max-retries', type=int, default=8)
 parser.add_argument('--max-rollout-cfl', type=float, default=1.0)
 parser.add_argument('--correction-depth-taper', type=int, nargs=2, default=None, metavar=('FULL_LEVELS', 'TRANSITION_LEVELS'))
 scales, remaining = parser.parse_known_args()
+if scales.reject_worsening_updates and not scales.loss_halving_continue:
+    raise ValueError('--reject-worsening-updates requires --loss-halving-continue')
+if scales.stage_initial_lr is not None and not scales.restart_stage_lr:
+    raise ValueError('--stage-initial-lr requires --restart-stage-lr')
 if scales.restart_stage_lr and (scales.resume_stage or not scales.fresh_training or not scales.curriculum_source):
     raise ValueError('--restart-stage-lr requires a fresh stage and curriculum source')
 if scales.resume_stage:
@@ -77,6 +86,7 @@ def run_train(*args, **kwargs):
     global resume_update, active_cfg
     bound = inspect.signature(original_train).bind(*args, **kwargs)
     cfg = bound.arguments['args']
+    cfg.reject_worsening_updates = scales.reject_worsening_updates
     active_cfg = cfg
     if scales.require_normalized_inputs:
         if not getattr(cfg, 'normalize_inputs', False) or bound.arguments['nn_stats'] is None or cfg.scaling_method_features != 'meanstd':
@@ -207,6 +217,12 @@ def parse_args():
         raise ValueError('Monthly baseline normalization requires surface monthly fused training')
     if scales.resume_stage and bool(stage_source.get('monthly_baseline_normalization', False)) != scales.monthly_baseline_normalization:
         raise ValueError('Resume must preserve the baseline normalization objective')
+    if stage_source is not None:
+        for key in ('use_date_embedding', 'disable_surface_restoring', 'correct_evaporation_sign'):
+            if bool(stage_source.get(key, False)) != bool(getattr(cfg, key, False)):
+                raise ValueError(f'Curriculum must preserve {key}')
+    cfg.lr_recovery_interval = scales.lr_recovery_interval
+    if cfg.lr_recovery_interval < 1: raise ValueError("Invalid LR recovery interval")
     cfg.monthly_initial_states = monthly_config
     cfg.monthly_parallel_workers = scales.monthly_parallel_workers
     cfg.monthly_worker_nodes = scales.monthly_worker_nodes
@@ -263,6 +279,8 @@ def parse_args():
 m.parse_args = parse_args
 original_init = m._load_or_init_train_state
 stage_source = m.load_checkpoint(scales.curriculum_source) if scales.curriculum_source else None
+if scales.reuse_source_normalization and (stage_source is None or not scales.monthly_baseline_normalization or not stage_source.get('monthly_baseline_calibration')):
+    raise ValueError('Reusing normalization requires a calibrated source checkpoint and monthly baseline normalization')
 fixed_denominators = json.loads(Path(scales.curriculum_denominators).read_text())
 if depth_loss is not None and any(value != 1. for value in fixed_denominators.values()):
     raise ValueError('Depth normalization replaces scalar normalization')
@@ -275,10 +293,13 @@ def stage_init(cfg, checkpoint_path, params, optimizer):
     if Path(checkpoint_path).exists() and not scales.resume_stage:
         raise FileExistsError(checkpoint_path)
     params, opt_state, history, start = original_init(cfg, checkpoint_path, params, optimizer)
-    denominators = stage_source['loss_term_denominators'] if scales.resume_stage and scales.monthly_baseline_normalization else fixed_denominators
+    denominators = stage_source['loss_term_denominators'] if (scales.resume_stage or scales.reuse_source_normalization) and scales.monthly_baseline_normalization else fixed_denominators
     cfg.loss_term_denominators = m._validate_loss_denominators(denominators, cfg.keys_loss)
-    if scales.resume_stage and scales.monthly_baseline_normalization:
+    if (scales.resume_stage or scales.reuse_source_normalization) and scales.monthly_baseline_normalization:
         cfg.monthly_baseline_calibration = stage_source['monthly_baseline_calibration']
+        if cfg.monthly_baseline_calibration['denominators'] != cfg.loss_term_denominators:
+            raise ValueError('Inherited normalization metadata mismatch')
+        print(f"REUSE NORMALIZATION: source horizon={cfg.monthly_baseline_calibration['horizon']}; training horizon={cfg.train_n_steps}; denominators={cfg.loss_term_denominators}; recalibration disabled", flush=True)
     if depth_loss is not None:
         if cfg.surface_only:
             surface_index = int(m.np.argmin(depth_loss['depths_m']))
@@ -295,30 +316,47 @@ def stage_init(cfg, checkpoint_path, params, optimizer):
                 correction_bounds_per_hour=scales.max_correction_per_hour).items():
             if stage_source.get(key) != expected:
                 raise ValueError(f'Curriculum checkpoint differs in {key}')
-        if bool(stage_source.get('loss_halving_continue', False)) != scales.loss_halving_continue:
+        if bool(stage_source.get('loss_halving_continue', False)) != scales.loss_halving_continue and not scales.restart_stage_lr:
             raise ValueError('Curriculum must preserve loss-halving scheduler mode')
         if bool(stage_source.get('loss_backtracking', False)) != scales.loss_backtracking:
             raise ValueError('Curriculum must preserve loss backtracking mode')
         if stage_source.get('loss_term_denominators') != cfg.loss_term_denominators and not scales.monthly_baseline_normalization:
             raise ValueError('Curriculum must preserve loss denominators')
         if scales.resume_stage:
+            if bool(stage_source.get('reject_worsening_updates', False)) != scales.reject_worsening_updates:
+                raise ValueError('Resume must preserve candidate rejection mode')
             if start != stage_source['update'] or cfg.train_n_steps != stage_source['n_steps']:
                 raise ValueError('Resume must preserve stage horizon and update numbering')
             expected = dict(rtol=1e-8, atol=1e-10, recovery_factor=1.5, recovery_interval=5, max_lr=cfg.train_lr)
             if cfg.surface_only or cfg.train_min_lr or cfg.lr_decrease_start_epoch != 1:
                 expected.update(min_lr=cfg.train_min_lr, decrease_start_epoch=cfg.lr_decrease_start_epoch)
             if scales.loss_halving_continue:
-                expected.update(mode='keep_update_halve_next', recovery_factor=1.5, recovery_interval=10, max_retries=0)
+                expected.update(mode='keep_update_halve_next', recovery_factor=1.5, recovery_interval=scales.lr_recovery_interval, max_retries=0)
             if stage_source.get('loss_backtracking_settings') != expected:
                 raise ValueError('Resume must preserve LR recovery settings')
             cfg.lr_clean_updates = stage_source.get('lr_clean_updates', 0)
         params, opt_state = stage_source['params'], stage_source['opt_state']
         cfg.lr_backoff = 1. if scales.restart_stage_lr else max(stage_source.get('lr_backoff', 1.), cfg.train_min_lr / cfg.train_lr)
         if scales.restart_stage_lr:
+            if scales.stage_initial_lr is not None:
+                if not cfg.train_min_lr <= scales.stage_initial_lr <= cfg.train_lr:
+                    raise ValueError('Stage initial LR must lie between train-min-lr and train-lr')
+                cfg.lr_backoff = scales.stage_initial_lr / cfg.train_lr
             cfg.lr_clean_updates = 0
             print('Restarting stage at epoch 1 with source weights/Adam and reset learning rate', flush=True)
         if opt_state is None:
             raise ValueError('Missing curriculum optimizer state')
+        if scales.restart_stage_lr:
+            import hashlib
+            audit = dict(source_update=stage_source['update'],new_horizon=cfg.train_n_steps,
+                         optimizer_preserved=True,weights_preserved=True,
+                         source_sha256=hashlib.sha256(Path(scales.curriculum_source).read_bytes()).hexdigest(),
+                         params_sha256=hashlib.sha256(pickle.dumps(params,protocol=5)).hexdigest(),
+                         opt_state_sha256=hashlib.sha256(pickle.dumps(opt_state,protocol=5)).hexdigest())
+            Path(checkpoint_path).parent.mkdir(parents=True,exist_ok=True)
+            (Path(checkpoint_path).parent/'stage_initialization_audit.json').write_text(json.dumps(audit,indent=2)+'\n')
+            print('STAGE INITIALIZATION AUDIT: '+json.dumps(audit),flush=True)
+
     print(f'Curriculum stage: {cfg.train_n_steps} steps; optimizer carried={stage_source is not None}; fixed denominators={cfg.loss_term_denominators}', flush=True)
     return (params, opt_state, history, start) if scales.resume_stage else (params, opt_state, [], 0)
 
@@ -337,11 +375,14 @@ def stage_payload(*args, **kwargs):
     if result['loss_backtracking_settings'] is not None and (active_cfg.surface_only or active_cfg.train_min_lr or active_cfg.lr_decrease_start_epoch != 1):
         result['loss_backtracking_settings'].update(min_lr=active_cfg.train_min_lr, decrease_start_epoch=active_cfg.lr_decrease_start_epoch)
     if scales.loss_halving_continue:
-        result['loss_backtracking_settings'].update(mode='keep_update_halve_next', recovery_factor=1.5, recovery_interval=10, max_retries=0)
+        result['loss_backtracking_settings'].update(mode='keep_update_halve_next', recovery_factor=1.5, recovery_interval=scales.lr_recovery_interval, max_retries=0)
     result['monthly_execution'] = dict(workers=scales.monthly_parallel_workers, worker_nodes=scales.monthly_worker_nodes, fused_validation=scales.monthly_fused_validation, checkpoint_score_every=scales.checkpoint_score_every)
     result['monthly_baseline_normalization'] = scales.monthly_baseline_normalization
     result['monthly_baseline_calibration'] = getattr(active_cfg, 'monthly_baseline_calibration', None)
     result['restart_stage_lr'] = scales.restart_stage_lr
+    result['reject_worsening_updates'] = scales.reject_worsening_updates
+    result['stage_initial_lr'] = scales.stage_initial_lr
+    result['reuse_source_normalization'] = scales.reuse_source_normalization
     result['spatial_loss_filter'] = getattr(active_cfg, 'spatial_loss_filter', None)
     result['depth_loss'] = depth_loss
     result['curriculum_source'] = scales.curriculum_source
@@ -356,7 +397,7 @@ m._train_checkpoint_payload = stage_payload
 monthly_pairs = monthly_config = None
 if scales.monthly_initial_states:
     from veros_control.training.monthly_batches import monthly_files, batch_months
-    monthly_pairs = monthly_files(scales.monthly_initial_states, scales.cyclic_glorys_targets)
+    monthly_pairs = monthly_files(scales.monthly_initial_states, scales.cyclic_glorys_targets, years=scales.training_years)
     if scales.training_months is not None:
         if not scales.training_months or len(set(scales.training_months)) != len(scales.training_months) or not set(scales.training_months) <= set(monthly_pairs):
             raise ValueError('Invalid training months')
@@ -370,7 +411,8 @@ if scales.monthly_initial_states:
     monthly_config = dict(files=monthly_pairs, batch_size=scales.initial_state_batch_size,
         seed=scales.initial_state_seed, checkpoint_months=scales.checkpoint_months,
         forcing_file=str(forcing), cyclic_glorys_targets=scales.cyclic_glorys_targets,
-        calendar='GLORYS timestamps scaled to the Veros model year')
+        calendar="Gregorian months mapped to 30 model days" if scales.training_years else "GLORYS timestamps scaled to the Veros model year",
+        **({'training_years':scales.training_years} if scales.training_years else {}))
     original_simulation_init = m.init_simulation
     def monthly_simulation_init(*args, **kwargs):
         kwargs.update(glorys_file=monthly_pairs[1][0], glorys_month_index=0, glorys_start_month=1,

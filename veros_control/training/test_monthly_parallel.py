@@ -10,6 +10,37 @@ spec=importlib.util.spec_from_file_location('parallel',Path(__file__).with_name(
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 
 class TransportTests(unittest.TestCase):
+    def test_tcp_authenticated_roundtrip_and_shutdown(self):
+        from multiprocessing.connection import Client
+        threads=[]
+        class Process:
+            returncode=None
+            def wait(self,timeout=None):
+                threads[-1].join(timeout)
+                if threads[-1].is_alive():raise RuntimeError('worker failed to stop')
+                self.returncode=0
+        def launch(command,**kwargs):
+            args=command[command.index('--tcp')+1:]
+            host,port,keyfile,_=args
+            def peer():
+                with Client(('127.0.0.1',int(port)),authkey=Path(keyfile).read_bytes()) as connection:
+                    connection.recv();connection.send((True,'ready'))
+                    while True:
+                        value=connection.recv()
+                        if value is None:break
+                        connection.send((True,value))
+            thread=threading.Thread(target=peer,daemon=True);threads.append(thread);thread.start()
+            return Process()
+        with tempfile.TemporaryDirectory() as directory, patch.object(m.subprocess,'Popen',side_effect=launch):
+            worker=m.TCPWorker(Path(directory)/'worker','localhost',None,('config',),'h200')
+            self.assertEqual(worker.ready(),(True,'ready'))
+            payload={'weights':np.arange(1024),'date':199601}
+            ok,result=worker.request(payload)
+            self.assertTrue(ok);np.testing.assert_array_equal(result['weights'],payload['weights'])
+            self.assertEqual(result['date'],payload['date'])
+            self.assertEqual((worker.directory/'auth.key').stat().st_mode & 0o777,0o600)
+            worker.stop()
+
     def test_atomic_roundtrip_and_consumption(self):
         with tempfile.TemporaryDirectory() as directory:
             p=Path(directory)/'message.pkl'

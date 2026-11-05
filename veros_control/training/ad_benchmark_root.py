@@ -245,6 +245,9 @@ def parse_args():
     parser.add_argument("--depth", type=int, default=2)
     parser.add_argument("--use-lon-lat", action="store_true")
     parser.add_argument("--use-forcings", action="store_true")
+    parser.add_argument("--use-date-embedding", action="store_true")
+    parser.add_argument("--disable-surface-restoring", action="store_true")
+    parser.add_argument("--correct-evaporation-sign", action="store_true")
     parser.add_argument("--conservative-mixing", action="store_true")
     parser.add_argument("--use-one-hot", action="store_true")
     parser.add_argument("--num-mlps", type=int, choices=(1, 2, 4), default=1)
@@ -924,12 +927,15 @@ def _train_checkpoint_payload(
         "train_epsilon": False,
         "use_lon_lat": args.use_lon_lat,
         "use_forcings": args.use_forcings,
+        "use_date_embedding": getattr(args, "use_date_embedding", False),
         "conservative_mixing": args.conservative_mixing,
         "use_one_hot": args.use_one_hot,
         "num_mlps": args.num_mlps,
         "TS": args.TS,
         "zero_output_init": args.zero_output_init,
         "surface_only": getattr(args, "surface_only", False),
+        "disable_surface_restoring": getattr(args, "disable_surface_restoring", False),
+        "correct_evaporation_sign": getattr(args, "correct_evaporation_sign", False),
         "stats_features": nn_stats,
         "feature_stats_file": args.feature_stats_file,
         "normalize_inputs": getattr(args, "normalize_inputs", nn_stats is not None),
@@ -1294,7 +1300,7 @@ def run_train_mode(
     lr_backoff = max(lr_backoff, min_learning_rate / args.train_lr)
     clean_updates = getattr(args, "lr_clean_updates", 0)
     if loss_halving_continue:
-        print(f"LR scheduler: keep finite stable update; halve NEXT LR once on failed same-batch loss test; start epoch={decrease_start}; floor={min_learning_rate:g}; recover 1.5 after 10 consecutive improvements, max={args.train_lr:g}; no retries", flush=True)
+        print(f"LR scheduler: keep finite stable update; halve NEXT LR once on failed same-batch loss test; start epoch={decrease_start}; floor={min_learning_rate:g}; recover 1.5 after {getattr(args, 'lr_recovery_interval', 10)} consecutive improvements, max={args.train_lr:g}; no retries", flush=True)
     elif loss_backtracking:
         print(f'Loss-based LR backtracking enabled: maximum={args.train_lr:g}, initial={args.train_lr * lr_backoff:g}; minimum={min_learning_rate:g}, decrease test from epoch={decrease_start}; recovery 1.5 after 5 clean updates', flush=True)
     if loss_backtracking and candidate_validator is None:
@@ -1428,13 +1434,22 @@ def run_train_mode(
                 next_lr, scheduler_report = loss_test_next_learning_rate(
                     current_lr, float(loss), candidate_report['loss'], update_idx + 1,
                     min_rate=min_learning_rate, max_rate=scheduled_lr, clean_updates=clean_updates,
-                    start_epoch=decrease_start)
+                    start_epoch=decrease_start, recovery_interval=getattr(args, "lr_recovery_interval", 10))
                 candidate_report.update(scheduler_report)
+                if getattr(args, 'reject_worsening_updates', False) and scheduler_report['loss_test_active'] and not scheduler_report['loss_test_passed']:
+                    candidate_report['rejected_candidate_loss'] = candidate_report['loss']
+                    candidate_report['rejected_candidate_loss_terms'] = candidate_report['loss_terms']
+                    params_after_update = params
+                    candidate_opt_state = opt_state
+                    updates = jax.tree_util.tree_map(jnp.zeros_like, updates)
+                    candidate_report['loss'] = float(loss)
+                    candidate_report['loss_terms'] = np.asarray(jax.device_get(loss_terms)).tolist()
+                    candidate_report['update_kept'] = False
                 lr_backoff = next_lr / scheduled_lr
                 clean_updates = scheduler_report["lr_clean_updates"]
                 args.lr_clean_updates = clean_updates
                 test = 'warmup' if not scheduler_report['loss_test_active'] else ('pass' if scheduler_report['loss_test_passed'] else 'fail')
-                print(f"  LR epoch={update_idx + 1} test={test} before={float(loss):.6g} after={candidate_report['loss']:.6g} update=KEPT applied={current_lr:.6g} next={next_lr:.6g} action={scheduler_report['lr_action']} improving_streak={clean_updates}/10 retries=0", flush=True)
+                print(f"  LR epoch={update_idx + 1} test={test} before={float(loss):.6g} after={candidate_report['loss']:.6g} update={'KEPT' if candidate_report['update_kept'] else 'REJECTED'} applied={current_lr:.6g} next={next_lr:.6g} action={scheduler_report['lr_action']} improving_streak={clean_updates}/{getattr(args, 'lr_recovery_interval', 10)} retries=0", flush=True)
             elif loss_backtracking:
                 from veros_control.training.stability import recover_learning_rate
                 # Use the actual accepted rate: the floor can truncate a halving.

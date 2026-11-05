@@ -1,3 +1,4 @@
+from veros_control.core.surface_fluxes import surface_tracer_fluxes
 import os
 
 import h5netcdf
@@ -150,6 +151,7 @@ class GlobalOneDegreeSetup(VerosSetup):
             tp =Variable("tp", ("xt", "yt", "n_window"), "", "", time_dependent=False),
             t_star =Variable("t_star", ("xt", "yt", "nmonths"), "", "", time_dependent=False),
             s_star =Variable("s_star", ("xt", "yt", "nmonths"), "", "", time_dependent=False),
+            date_year_offset=Variable("date_year_offset", tuple(), "", "Calendar year minus 1993", time_dependent=False),
             forcing_time_shift=Variable(
                 "forcing_time_shift", tuple(), "s", "Forcing clock offset from January 1", time_dependent=False
             ),
@@ -185,6 +187,7 @@ class GlobalOneDegreeSetup(VerosSetup):
             train_epsilon=settings.train_epsilon,
             use_lon_lat=settings.use_lon_lat,
             use_forcings=settings.use_forcings,
+            use_date_embedding=settings.use_date_embedding,
             conservative_mixing=settings.conservative_mixing,
             use_one_hot=settings.use_one_hot,
             num_mlps=settings.num_mlps,
@@ -193,6 +196,11 @@ class GlobalOneDegreeSetup(VerosSetup):
         model_kwargs = checkpoint_model_kwargs(checkpoint, model_defaults)
         model_kwargs["nz"] = settings.nz
 
+        with settings.unlock():
+            settings.use_date_embedding = model_kwargs.get("use_date_embedding", False)
+            for key in ("disable_surface_restoring", "correct_evaporation_sign"):
+                if key in checkpoint:
+                    setattr(settings, key, bool(checkpoint[key]))
         model = VerticalCorrectionMLP(**model_kwargs)
         self._nn_model_batched = make_batched_model(
             model,
@@ -285,6 +293,9 @@ class GlobalOneDegreeSetup(VerosSetup):
         return day_of_year / 365.0 * model_year_seconds
 
     def _read_ERA5_forcing(self, var, n_forcing, dt_forcing):
+        sequence = getattr(self, "_era5_sequence_buffers", None)
+        if sequence is not None:
+            return sequence[var]
         forcing_window = getattr(self, "_era5_forcing_window", None)
         if forcing_window is None and getattr(self, 'setup_forcing_window', False):
             # Setup evaluates forcing at t=0 only. Avoid reading an entire year
@@ -602,7 +613,8 @@ class GlobalOneDegreeSetup(VerosSetup):
         reset_nn_momentum_sources(state)
         vs = state.variables
         settings = state.settings
-        n_forcing = 365 * 24 // settings.dt_forcing
+        sequence_active = getattr(self, "_era5_sequence_buffers", None) is not None
+        n_forcing = 2880 if sequence_active else 365 * 24 // settings.dt_forcing
 
         taux_forcing = self._read_ERA5_forcing("ewss", n_forcing, settings.dt_forcing) / 3600
         tauy_forcing = self._read_ERA5_forcing("nsss", n_forcing, settings.dt_forcing) / 3600
@@ -624,7 +636,7 @@ class GlobalOneDegreeSetup(VerosSetup):
                 qsol_forcing,
                 evap_forcing,
                 tp_forcing,
-                getattr(self, "_era5_forcing_window", {"start": 0})["start"],
+                self._era5_sequence_index_start if sequence_active else getattr(self, "_era5_forcing_window", {"start": 0})["start"],
                 n_forcing,
             )
         )
@@ -832,11 +844,16 @@ def set_forcing_kernel(
 
     qqnet = f1 * qnet_window[:, :, 0] + f2 * qnet_window[:, :, 1]
     t_star_cur = f1_rest * vs.t_star[..., n1_rest] + f2_rest * vs.t_star[..., n2_rest]
-    vs.forc_temp_surface = (qqnet + dQdT * (vs.temp[..., -1,vs.tau] - t_star_cur))  * vs.maskT[..., -1] / cp_0 / settings.rho_0
     evap_cur =  f1 * evap_window[:, :, 0] + f2 * evap_window[:, :, 1]
     tp_cur =  f1 * tp_window[:, :, 0] + f2 * tp_window[:, :, 1]
     s_star_cur = f1_rest * vs.s_star[..., n1_rest] + f2_rest * vs.s_star[..., n2_rest]
-    vs.forc_salt_surface = (Ks*(vs.salt[...,-1,vs.tau]-s_star_cur) -(tp_cur - evap_cur) * vs.salt[..., -1,vs.tau]) * vs.maskT[..., -1]
+    heat_flux, salt_flux = surface_tracer_fluxes(
+        qqnet, vs.temp[..., -1, vs.tau], t_star_cur, vs.salt[..., -1, vs.tau],
+        s_star_cur, tp_cur, evap_cur, dQdT, Ks, settings.rho_0, cp_0,
+        disable_restoring=settings.disable_surface_restoring,
+        correct_evaporation_sign=settings.correct_evaporation_sign)
+    vs.forc_temp_surface = heat_flux * vs.maskT[..., -1]
+    vs.forc_salt_surface = salt_flux * vs.maskT[..., -1]
 
     # apply simple ice mask
     mask1 = vs.temp[:, :, -1, vs.tau] * vs.maskT[:, :, -1] > -1.8

@@ -29,6 +29,7 @@ def checkpoint_model_kwargs(checkpoint, defaults):
     if checkpoint is None:
         return kwargs
 
+    kwargs["use_date_embedding"] = checkpoint.get("use_date_embedding", False)
     kwargs["surface_only"] = checkpoint.get("surface_only", False)
     kwargs["residual_blocks"] = checkpoint.get("residual_blocks", 0)
     key_map = {
@@ -38,6 +39,7 @@ def checkpoint_model_kwargs(checkpoint, defaults):
         "train_epsilon": "train_epsilon",
         "use_lon_lat": "use_lon_lat",
         "use_forcings": "use_forcings",
+        "use_date_embedding": "use_date_embedding",
         "conservative_mixing": "conservative_mixing",
         "use_one_hot": "use_one_hot",
         "num_mlps": "num_mlps",

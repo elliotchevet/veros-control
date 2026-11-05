@@ -18,6 +18,26 @@ class BasinLossTests(unittest.TestCase):
         target={k:np.zeros(shape) for k in ('temp','salt')}
         return vs,target
 
+    def test_dynamic_targets_reuse_trace_and_match_static_gradients(self):
+        vs, initial = self.fixture()
+        _, _, dynamic_terms, _ = m.make_basin_loss(vs, initial, levels=1,
+            pattern_lambda=1., initial_target=initial, target_alpha=lambda s:s.variables.time/720.)
+        traces = []
+        def loss(field, target):
+            traces.append(1)
+            state=NS(variables=NS(temp=field,salt=field,tau=0,time=jnp.asarray(81.)))
+            return jnp.sum(dynamic_terms(state,target,initial,jnp.asarray(720.)))
+        compiled=jax.jit(jax.value_and_grad(loss))
+        field=jnp.asarray(initial['temp'])+3.
+        for amplitude in (2.,7.,-1.):
+            target={k:jnp.asarray(v)+amplitude for k,v in initial.items()}
+            _,_,static_terms,_=m.make_basin_loss(vs,target,levels=1,pattern_lambda=1.,
+                initial_target=initial,target_alpha=lambda s:s.variables.time/720.)
+            def static(f):return jnp.sum(static_terms(NS(variables=NS(temp=f,salt=f,tau=0,time=jnp.asarray(81.)))))
+            actual=compiled(field,target);expected=jax.value_and_grad(static)(field)
+            for a,b in zip(actual,expected):np.testing.assert_allclose(a,b,rtol=1e-6,atol=1e-7)
+        self.assertEqual(len(traces),1)
+
     def test_domains_are_disjoint_and_wrap(self):
         mask=m.basin_masks(np.array([-150,210,-70,20,120]),np.array([-61,-60,0,30,90]))
         self.assertTrue((mask.sum(axis=0)<=1).all())

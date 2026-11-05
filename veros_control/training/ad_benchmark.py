@@ -130,6 +130,9 @@ def parse_args():
     parser.add_argument("--depth", type=int, default=2)
     parser.add_argument("--use-lon-lat", action="store_true")
     parser.add_argument("--use-forcings", action="store_true")
+    parser.add_argument("--use-date-embedding", action="store_true")
+    parser.add_argument("--disable-surface-restoring", action="store_true")
+    parser.add_argument("--correct-evaporation-sign", action="store_true")
     parser.add_argument("--conservative-mixing", action="store_true")
     parser.add_argument("--use-one-hot", action="store_true")
     parser.add_argument("--num-mlps", type=int, choices=(1, 2, 4), default=1)
@@ -430,6 +433,7 @@ def init_nn_benchmark(simulation, args):
         "train_epsilon": False,
         "use_lon_lat": args.use_lon_lat,
         "use_forcings": args.use_forcings,
+        "use_date_embedding": getattr(args, "use_date_embedding", False),
         "conservative_mixing": args.conservative_mixing,
         "use_one_hot": args.use_one_hot,
         "num_mlps": args.num_mlps,
@@ -445,7 +449,11 @@ def init_nn_benchmark(simulation, args):
         raise ValueError("Surface-only training cannot load a full-depth checkpoint")
     args.surface_only = bool(model_kwargs.get("surface_only", False))
     args.use_forcings = bool(model_kwargs.get("use_forcings", args.use_forcings))
+    args.use_date_embedding = bool(model_kwargs.get("use_date_embedding", False))
     with settings.unlock():
+        settings.use_date_embedding = args.use_date_embedding
+        settings.disable_surface_restoring = getattr(args, "disable_surface_restoring", False)
+        settings.correct_evaporation_sign = getattr(args, "correct_evaporation_sign", False)
         settings.use_forcings = args.use_forcings
 
     model = VerticalCorrectionMLP(**model_kwargs)
@@ -457,6 +465,7 @@ def init_nn_benchmark(simulation, args):
         print(f"Using NN checkpoint parameters from {args.nn_checkpoint}")
     else:
         n_input_channels = 4 + len(FORCING_FEATURE_NAMES) if args.use_forcings else 4
+        n_input_channels += 3 if args.use_date_embedding else 0
         x_tmp = jnp.zeros((settings.nz, n_input_channels))
         coords_tmp = jnp.zeros((2, 4))
         dz_tmp = jnp.zeros((settings.nz,))
@@ -491,7 +500,7 @@ def init_nn_benchmark(simulation, args):
             f"normalize_inputs={settings.normalize_inputs}, "
             f"scaling_method_features={settings.scaling_method_features}"
         )
-    print(f"NN forcing inputs: use_forcings={settings.use_forcings}")
+    print(f"NN forcing inputs: use_forcings={settings.use_forcings}, date_embedding={settings.use_date_embedding}; restoring_disabled={settings.disable_surface_restoring}; corrected_evaporation={settings.correct_evaporation_sign}", flush=True)
 
     return params, model_batched_unscaled, stats, model_kwargs
 

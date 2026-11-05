@@ -4,6 +4,8 @@ Only host arrays cross the pipes. Each worker owns its Veros simulation and
 solver cache; the coordinator alone performs the averaged Adam update.
 """
 import atexit
+import socket
+from multiprocessing.connection import Listener, Client
 from concurrent.futures import ThreadPoolExecutor
 import importlib.util
 import os
@@ -104,6 +106,39 @@ class FileWorker:
 
 
 
+class TCPWorker(FileWorker):
+    """Authenticated persistent TCP; no shared-file polling for requests/results."""
+    def start(self):
+        self.directory=self.root/f'generation_{self.generation}'
+        self.directory.mkdir(parents=True,exist_ok=False)
+        self.sequence=0;self.connection=None
+        key=os.urandom(32);keyfile=self.directory/'auth.key'
+        fd=os.open(keyfile,os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600)
+        with os.fdopen(fd,'wb') as stream:stream.write(key)
+        self.listener=Listener(('',0),authkey=key)
+        command=['srun','--exclusive','--exact','--nodes=1','--ntasks=1','--cpus-per-task=8',
+            '--mem='+os.environ.get('MONTHLY_WORKER_MEMORY','64G'),'--gres=gpu:'+self.gpu_type+':1','--nodelist='+self.node,
+            sys.executable,'-B',str(Path(__file__).resolve()),'--tcp',socket.gethostname(),str(self.listener.address[1]),str(keyfile),str(self.directory)]
+        if self.het_group is not None:command.insert(1,f'--het-group={self.het_group}')
+        self.process=subprocess.Popen(command,stdout=self.log,stderr=subprocess.STDOUT)
+    def ready(self):
+        self.connection=self.listener.accept();self.listener.close()
+        self.connection.send(self.initial);self.sequence=1
+        return self.connection.recv()
+    def request(self,value):
+        if self.sequence>self.max_requests:
+            self.stop();self.generation+=1;self.start()
+            ok,result=self.ready()
+            if not ok:raise RuntimeError(result)
+        self.connection.send(value);result=self.connection.recv();self.sequence+=1
+        return result
+    def close(self):
+        if self.connection is not None:
+            try:self.connection.send(None)
+            except (OSError,EOFError):pass
+            self.connection.close();self.connection=None
+
+
 class MonthlyWorkers:
     def __init__(self, cfg, files, batch_size, seed, score_months, max_cfl):
         import jax
@@ -130,7 +165,8 @@ class MonthlyWorkers:
         for index in range(cfg.monthly_parallel_workers):
             if nodes is not None:
                 log = open(directory / f'worker_{index}.log', 'wb')
-                remote = FileWorker(directory/f'node_{index}', nodes[index][0], log,
+                worker_class = TCPWorker if os.environ.get('MONTHLY_TRANSPORT') == 'tcp' else FileWorker
+                remote = worker_class(directory/f'node_{index}', nodes[index][0], log,
                     (config, files, batch_size, seed, score_months, max_cfl), nodes[index][1], nodes[index][2])
                 print(f'WORKER {index}: node={nodes[index][0]} GPU={nodes[index][1]} one batch member', flush=True)
                 self.processes.append((remote.process, remote, log))
@@ -196,7 +232,7 @@ class MonthlyWorkers:
         self.pool.shutdown(wait=False)
 
 
-def worker(response_fd=None, directory=None):
+def worker(response_fd=None, directory=None, connection=None):
     sequence = 0
     if directory is not None:
         # The actual step identity accounts for heterogeneous Slurm components.
@@ -204,6 +240,10 @@ def worker(response_fd=None, directory=None):
         (directory/'slurm_step.txt').write_text(step+'\n')
     response = os.fdopen(response_fd, 'wb') if directory is None else None
     def receive():
+        if connection is not None:
+            value=connection.recv()
+            if value is None:raise EOFError
+            return value
         if directory is None: return pickle.load(sys.stdin.buffer)
         path = directory/f'request_{sequence}.pkl'
         while not path.exists():
@@ -214,6 +254,8 @@ def worker(response_fd=None, directory=None):
         return value
     def send(ok, value):
         nonlocal sequence
+        if connection is not None:
+            connection.send((ok,value));return
         if directory is None:
             pickle.dump((ok, value), response, protocol=pickle.HIGHEST_PROTOCOL);response.flush()
         else:
@@ -241,16 +283,20 @@ def worker(response_fd=None, directory=None):
             return bound_corrections(raw,eps,cfg.monthly_correction_bounds)/cfg.epsilon
         single = m.NNParamsTrainChunkedVJP(sim,model,stats,None)
         adapter = MonthlyRollouts(m,single,cfg,files,batch_size,seed,score_months,max_cfl)
+        from veros_control.training.cached_dated import CachedDatedRollouts
+        fast=CachedDatedRollouts(adapter) if os.environ.get('MONTHLY_COMPILE_CACHE') == '1' else None
         send(True, 'ready')
         while True:
             operation, month, params, options, denominators = receive()
             params=m.jax.tree_util.tree_map(m.jnp.asarray,params)
             adapter.loss_term_denominators=m.jnp.asarray(denominators)
             if operation == 'g':
-                with adapter.member(month) as ad:
-                    result=ad.g(sim.state,params,**options)
+                if fast is not None:result=fast.g(month,params,options)
+                else:
+                    with adapter.member(month) as ad:
+                        result=ad.g(sim.state,params,**options)
             elif operation == 'validate':
-                result=adapter.validate_member(month,params)
+                result=fast.validate(month,params) if fast is not None else adapter.validate_member(month,params)
             else: raise ValueError(operation)
             send(True,m.jax.device_get(result))
     except EOFError:
@@ -267,7 +313,10 @@ def worker(response_fd=None, directory=None):
 
 
 if __name__ == '__main__':
-    if sys.argv[1] == '--files':
+    if sys.argv[1] == '--tcp':
+        with Client((sys.argv[2],int(sys.argv[3])),authkey=Path(sys.argv[4]).read_bytes()) as connection:
+            worker(directory=Path(sys.argv[5]),connection=connection)
+    elif sys.argv[1] == '--files':
         worker(directory=Path(sys.argv[2]))
     else:
         worker(int(sys.argv[1]))

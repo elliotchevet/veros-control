@@ -196,7 +196,16 @@ def extract_features(state, tau, stats=None, normalize=False, mask=None, scaling
         features_mask = npx.concatenate([features_mask, forcing_mask], axis=-1)
 
     if normalize and stats is not None:
-        return _normalize_features(features, features_mask, stats, scaling_method)
-    else:
-        return features
+        features = _normalize_features(features, features_mask, stats, scaling_method)
+    if getattr(state.settings, "use_date_embedding", False):
+        date = encode_date(vs.time + vs.forcing_time_shift, vs.date_year_offset)
+        features = npx.concatenate([features, npx.broadcast_to(date, (*features.shape[:-1], 3))], axis=-1)
+    return features
 
+
+
+def encode_date(seconds_in_year, year_offset):
+    """360-day seasonal phase, plus continuous decades since January 1993."""
+    years = seconds_in_year / (360.0 * 86400.0)
+    phase = 2.0 * npx.pi * years
+    return npx.stack((npx.sin(phase), npx.cos(phase), (year_offset + years) / 10.0))

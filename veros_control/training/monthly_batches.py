@@ -11,7 +11,10 @@ import numpy as np
 MONTH_DAYS = (31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
 
 
-def monthly_files(directory, cyclic=False):
+def monthly_files(directory, cyclic=False, years=None):
+    if years is not None:
+        from veros_control.training.dated_months import dated_files
+        return dated_files(directory, *years)
     files = {}
     for path in sorted(Path(directory).glob('*4*0_1993*.nc')):
         match = re.search(r'_1993(\d{2})\.nc$', path.name)
@@ -93,7 +96,8 @@ class MonthlyRollouts:
     def select(self, update):
         self.months = batch_months(tuple(self.files), self.batch_size, self.seed, update)
         self.cached_candidate = None
-        print(f'Monthly training batch at update {update+1}: {self.months}', flush=True)
+        dates = [Path(self.files[i][0]).name for i in self.months] if self.cfg.monthly_initial_states.get('training_years') else self.months
+        print(f'Monthly training batch at update {update+1}: samples={self.months} dates={dates}', flush=True)
 
     @contextmanager
     def member(self, month):
@@ -104,18 +108,34 @@ class MonthlyRollouts:
         window = getattr(sim, '_era5_forcing_window', None)
         cache = getattr(sim, '_era5_forcing_cache', {})
         initial, target = self.files[month]
+        from contextlib import ExitStack
+        contexts = ExitStack()
         try:
             sim.state = self.base_state
             sim.state = load_glorys_state(sim, initial, config=SimpleNamespace(
-                glorys_month_lengths=MONTH_DAYS, glorys_start_month=month))
-            shift, interval = monthly_clock(initial, target, time.convert_time(1., 'years', 'seconds'),
-                self.cfg.monthly_initial_states['cyclic_glorys_targets'])
+                glorys_month_lengths=MONTH_DAYS, glorys_start_month=snapshot_date(initial).month))
+            dated = self.cfg.monthly_initial_states.get('training_years')
+            if dated:
+                from veros_control.training.dated_months import model_timestamp, load_window
+                from veros_control.setup.global_1deg_control.era5_sequence import sequence_context
+                start, end = snapshot_date(initial), snapshot_date(target)
+                shift = model_timestamp(start) - (start.year-1993)*360*86400
+                interval = model_timestamp(end)-model_timestamp(start)
+                buffers, first = load_window(Path(initial).parent, start, self.steps, sim.state.settings.dt_tracer)
+                contexts.enter_context(sequence_context(sim, tuple(self.m.jnp.asarray(z) for z in buffers), first))
+                with sim.state.variables.unlock():
+                    sim.state.variables.date_year_offset = self.m.jnp.asarray(float(start.year-1993))
+                print(f'DATE sample={month} GLORYS={start.isoformat()} target={end.isoformat()} ERA5={start.year} horizon={self.steps}h', flush=True)
+            else:
+                shift, interval = monthly_clock(initial, target, time.convert_time(1., 'years', 'seconds'),
+                    self.cfg.monthly_initial_states['cyclic_glorys_targets'])
             if self.steps * sim.state.settings.dt_tracer > interval:
                 raise ValueError('Monthly interpolation supports rollouts only up to the next monthly target')
             with sim.state.variables.unlock():
                 sim.state.variables.forcing_time_shift = self.m.jnp.asarray(shift)
             # Division and floor-division can disagree at exact floating-point record boundaries.
-            sim.prepare_ERA5_forcing_window(sim.state, self.steps, leading_margin=1)
+            if not dated:
+                sim.prepare_ERA5_forcing_window(sim.state, self.steps, leading_margin=1)
             cfg = SimpleNamespace(**vars(self.cfg))
             cfg.glorys_reference_seconds = interval
             cfg.glorys_interpolation_alpha = self.steps * sim.state.settings.dt_tracer / interval
@@ -126,6 +146,7 @@ class MonthlyRollouts:
             ad.loss_term_denominators = self.loss_term_denominators
             yield ad
         finally:
+            contexts.close()
             sim.state = original_state
             sim._era5_forcing_window, sim._era5_forcing_cache = window, cache
 

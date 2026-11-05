@@ -1,6 +1,9 @@
 from veros.settings import Setting
 
 SETTINGS = {
+    "use_date_embedding": Setting(False, bool, "Append seasonal sine/cosine and year features"),
+    "disable_surface_restoring": Setting(False, bool, "Disable SST and SSS restoring"),
+    "correct_evaporation_sign": Setting(False, bool, "Use signed CDS evaporation: precipitation plus evaporation"),
     "start_date": Setting("",str, "Start date of simulation"),
     "dt_forcing": Setting(3, int, "Time step for forcing in hours"),
     "smooth": Setting(2, int, "scale ratio for topography gaussian filtering"),
