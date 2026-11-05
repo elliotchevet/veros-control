@@ -7,7 +7,7 @@ from veros_control.core.rollout import nested_scan
 
 class RolloutTests(unittest.TestCase):
     def test_nested_scan_matches_forward_and_gradient(self):
-        for length in (1,9,27,30):
+        for length in (1,9,27,30,54,81,135,189,243):
             def run(parameter,nested):
                 def step(state,index):
                     state=.97*state+parameter*jnp.sin(index*.1)

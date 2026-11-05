@@ -56,3 +56,31 @@ python -m pip wheel --no-deps --no-build-isolation --wheel-dir outputs/wheels .
 
 Diagnostic test data and plots are synthetic fixtures, not scientific experiment
 results. All generated data, wheels and checkpoints stay under ignored `outputs/`.
+
+## Compile reuse and smooth curricula (2026-11-05)
+
+- CPU unit suite: 38 tests, 35 passed and 3 optional main-parity tests skipped
+  (no comparison checkout configured).
+- Real small-grid Veros: legacy versus cached loss/gradient agreement across
+  different initial states, targets, reference intervals and external forcing
+  buffers (rtol1e-9, atol1e-10); one cached gradient compilation across cases.
+- Two persistent authenticated TCP workers reproduce serial gradients/losses and
+  stability reports. Round-trip reuse, key permissions, timeout and remote error
+  propagation are covered separately.
+- Real two-stage training verifies best-checkpoint transitions, inherited first-
+  stage loss denominators/calibration, per-stage LR and no warmup. Candidate
+  rejection is configured; the integration fixture's candidates were accepted.
+- Nested-scan forward/gradient checks include54,81,135,189,243 steps.
+
+Reproduce the additional integration checks using the existing smoke data:
+
+```bash
+python tests/smoke_speedups.py outputs/port_smoke_20261028b
+python tests/smoke_smooth_curriculum.py outputs/port_smoke_20261028b
+```
+
+The earlier statement that batches are serial describes the previous revision.
+Persistent workers are now optional. Production H200 speed/memory and multi-node
+Slurm execution of this clean implementation have not been benchmarked; the
+research implementation's measured speedup is not assumed to transfer unchanged.
+Existing production jobs and their snapshots were not modified.

@@ -2,7 +2,7 @@
 import jax
 import jax.numpy as jnp
 import numpy as np
-from veros_control.core.rollout import solver_cache_scope
+from veros_control.core.rollout import solver_cache_scope, training_forcing
 
 
 def state_metrics(state):
@@ -38,7 +38,7 @@ def valid_metrics(values,max_cfl):
 
 
 def make_validator(rollout,n_steps,max_cfl):
-    def evaluate(params):
+    def evaluate(params, initial, forcing):
         def step(carry,_):
             state, previous = carry
             state = rollout._step(state,params)
@@ -46,11 +46,12 @@ def make_validator(rollout,n_steps,max_cfl):
             accumulated = jnp.stack((jnp.maximum(previous[0],now[0]),jnp.minimum(previous[1],now[1]),
                 jnp.maximum(previous[2],now[2]),jnp.minimum(previous[3],now[3]),jnp.maximum(previous[4],now[4])))
             return (state,accumulated),None
-        (_, values),_ = jax.lax.scan(step,(rollout.initial,state_metrics(rollout.initial)),None,length=n_steps)
+        with training_forcing(rollout.simulation, forcing):
+            (_, values),_ = jax.lax.scan(step,(initial,state_metrics(initial)),None,length=n_steps)
         return values
     compiled = jax.jit(evaluate)
-    def validate(params):
+    def validate(params, initial=None, forcing=None):
         with solver_cache_scope():
-            values = np.asarray(jax.device_get(compiled(params)))
+            values = np.asarray(jax.device_get(compiled(params, rollout.initial if initial is None else initial, forcing)))
         return valid_metrics(values,max_cfl),report_metrics(values)
     return validate

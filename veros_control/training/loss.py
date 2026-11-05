@@ -125,7 +125,7 @@ def make_basin_loss(variables, target, keys=('temp', 'salt'), levels=5, pattern_
             initial_fields[key] = jnp.take(jnp.asarray(truth), selected, axis=2)
             initial_means[key] = means(jnp.asarray(truth))
 
-    def terms(state):
+    def terms(state, dynamic_target=None, dynamic_initial=None, dynamic_alpha=None, dynamic_lead=None):
         result = []
         for key in keys:
             field = getattr(state.variables, key)
@@ -136,6 +136,9 @@ def make_basin_loss(variables, target, keys=('temp', 'salt'), levels=5, pattern_
                 alpha = target_alpha(state)
                 truth_mean = initial_means[key] * (1-alpha) + truth_mean * alpha
                 truth_field = initial_fields[key] * (1-alpha) + truth_field * alpha
+            if dynamic_target is not None:
+                truth = dynamic_initial[key]*(1-dynamic_alpha) + dynamic_target[key]*dynamic_alpha
+                truth_mean, truth_field = means(truth), jnp.take(truth, selected, axis=2)
             squared = (means(field) - truth_mean) ** 2
             if pattern_lambda > 0:
                 error = jnp.take(field, selected, axis=2) - truth_field
@@ -143,7 +146,7 @@ def make_basin_loss(variables, target, keys=('temp', 'salt'), levels=5, pattern_
                 if pattern_lambda == 1.:
                     squared = jnp.sum(normalized * masked_error ** 2, axis=(1, 2))
                     if filter_error is not None:
-                        smooth = filter_error(error, lead_hours(state))
+                        smooth = filter_error(error, lead_hours(state) if dynamic_lead is None else dynamic_lead)
                         smooth = jnp.where(normalized > 0, smooth[None, ...], 0.)
                         mix = spatial_filter['raw_fraction']
                         squared = mix*squared+(1-mix)*jnp.sum(normalized*smooth**2,axis=(1,2))
@@ -169,7 +172,7 @@ def make_basin_loss(variables, target, keys=('temp', 'salt'), levels=5, pattern_
     return lambda state: jnp.mean(terms(state)), tuple(keys), terms, metadata
 
 
-def build_loss(state, reference, config, n_steps):
+def build_loss(state, reference, config, n_steps, dynamic=False):
     """Mean over active region/depth pairs, with area weights within each pair."""
     if config.interpolation == 'sampled':
         alpha = lambda s:(s.variables.time-reference.initial_time)/reference.duration_seconds
@@ -183,4 +186,13 @@ def build_loss(state, reference, config, n_steps):
         initial_target=reference.initial,target_alpha=alpha,
         depth_loss=config.depth_loss, spatial_filter=config.spatial_filter,
         lead_hours=lambda s:(s.variables.time-reference.initial_time)/3600.)
+    if dynamic:
+        fixed_terms = terms
+        dt = float(state.settings.dt_tracer)
+        def terms(state, values):
+            initial, target, start, duration = values
+            elapsed = state.variables.time-start
+            alpha = elapsed/duration if config.interpolation == 'sampled' else (
+                n_steps*dt/duration if config.interpolation == 'endpoint' else 1.)
+            return fixed_terms(state, target, initial, alpha, elapsed/3600.)
     return names, terms, metadata

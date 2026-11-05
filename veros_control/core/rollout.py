@@ -153,3 +153,31 @@ class Rollout:
             raw = sampled.reshape(-1,n_terms).sum(axis=0)/(n_steps//sample_steps)
             return jnp.mean(raw/denominators), raw
         return jax.jit(evaluate), jax.jit(jax.value_and_grad(evaluate, has_aux=True))
+
+
+    def reusable_objective(self, terms, n_steps, sample_steps, chunk_base=3):
+        """Keep state, reference and forcing arrays dynamic across monthly cases."""
+        keys = self.keys
+        def evaluate(params, denominators, initial, reference, forcing):
+            with training_forcing(self.simulation, forcing):
+                def step(dynamic, index):
+                    state = inject_dynamic_vars(initial, dynamic)
+                    state = self._step(state, params)
+                    values = jax.lax.cond(index % sample_steps == 0,
+                        lambda s:terms(s, reference), lambda _:jnp.zeros_like(denominators), state)
+                    return {key:getattr(state.variables,key) for key in keys}, values
+                carry = {key:getattr(initial.variables,key) for key in keys}
+                _, sampled = nested_scan(step, carry, n_steps, chunk_base)
+                raw = sampled.reshape(-1, denominators.shape[0]).sum(0)/(n_steps//sample_steps)
+                return jnp.mean(raw/denominators), raw
+        return jax.jit(evaluate), jax.jit(jax.value_and_grad(evaluate, has_aux=True))
+
+
+@contextmanager
+def training_forcing(simulation, forcing):
+    previous = getattr(simulation, '_training_forcing', None)
+    try:
+        simulation._training_forcing = forcing
+        yield
+    finally:
+        simulation._training_forcing = previous

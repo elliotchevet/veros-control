@@ -34,7 +34,7 @@ def case_configs(config):
 
 
 class BatchObjective:
-    """Reuse the setup, keeping only one month's state/compiled objective in memory."""
+    """Reuse the setup; optionally keep one dynamic objective across monthly cases."""
     def __init__(self, config, simulation, model, stats):
         self.config, self.simulation = config, simulation
         self.model, self.stats = model, stats
@@ -46,17 +46,25 @@ class BatchObjective:
 
     def member(self, month):
         if self.active != month:
-            if self.active is not None:
+            if self.active is not None and not self.config.reuse_rollouts:
                 del self.evaluate_one, self.gradient_one, self.validate_one, self.rollout
                 jax.clear_caches()
             cfg = self.cases[month]
             sim, reference = create_simulation(cfg, self.simulation)
             sim.set_forcing(sim.state)
-            self.rollout = Rollout(sim, self.model, self.stats, cfg.normalization, cfg.model.use_forcings)
-            self.names, terms, metadata = build_loss(sim.state, reference, cfg.loss, cfg.n_steps)
+            self.initial = sim.state.copy()
+            self.reference = (reference.initial, reference.target,
+                              np.asarray(reference.initial_time), np.asarray(reference.duration_seconds))
+            self.forcing = sim.training_forcing() if hasattr(sim, 'training_forcing') else None
+            names, terms, metadata = build_loss(sim.state, reference, cfg.loss, cfg.n_steps,
+                                                dynamic=self.config.reuse_rollouts)
             self.metadata[str(month)] = metadata
-            self.evaluate_one, self.gradient_one = self.rollout.objective(terms, cfg.n_steps, cfg.sample_steps, cfg.chunk_base)
-            self.validate_one = make_validator(self.rollout, cfg.n_steps, cfg.max_cfl) if cfg.validate else lambda p:(True, {})
+            if self.active is None or not self.config.reuse_rollouts:
+                self.rollout = Rollout(sim, self.model, self.stats, cfg.normalization, cfg.model.use_forcings)
+                self.names = names
+                factory = self.rollout.reusable_objective if self.config.reuse_rollouts else self.rollout.objective
+                self.evaluate_one, self.gradient_one = factory(terms, cfg.n_steps, cfg.sample_steps, cfg.chunk_base)
+                self.validate_one = make_validator(self.rollout, cfg.n_steps, cfg.max_cfl) if cfg.validate else lambda *a:(True, {})
             self.active = month
         return self
 
@@ -65,7 +73,7 @@ class BatchObjective:
         for month in months:
             self.member(month)
             with solver_cache_scope():
-                value = (self.gradient_one if gradient else self.evaluate_one)(params, scale)
+                value = (self.gradient_one if gradient else self.evaluate_one)(params, scale, *self.dynamic_inputs())
                 jax.block_until_ready(value)
             total = value if total is None else jax.tree_util.tree_map(lambda a,b:a+b, total, value)
         return jax.tree_util.tree_map(lambda x:x/len(months), total)
@@ -74,8 +82,14 @@ class BatchObjective:
         reports = {}
         for month in months:
             self.member(month)
-            valid, report = self.validate_one(params)
+            valid, report = self.validate_one(params, self.initial, self.forcing) if self.config.reuse_rollouts else self.validate_one(params)
             reports[str(month)] = report
             if not valid:
                 return False, reports
         return True, reports
+
+    def dynamic_inputs(self):
+        return (self.initial, self.reference, self.forcing) if self.config.reuse_rollouts else ()
+
+    def close(self):
+        pass

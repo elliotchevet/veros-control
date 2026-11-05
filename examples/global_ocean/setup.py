@@ -241,6 +241,10 @@ class GlobalOneDegreeSetup(VerosSetup):
         self._era5_forcing_window = plan_forcing_window(
             forcing_time, n_steps, settings.dt_tracer, forcing_interval, period_count, margin, leading_margin=1,
         )
+        # Fixed length keeps different monthly offsets on the same JIT trace.
+        self._era5_forcing_window['length'] = min(period_count, max(
+            self._era5_forcing_window['length'],
+            int(np.ceil(n_steps*settings.dt_tracer/forcing_interval))+3+2*margin))
         length = self._era5_forcing_window["length"]
         self._era5_forcing_cache = {}
 
@@ -505,13 +509,10 @@ class GlobalOneDegreeSetup(VerosSetup):
         vs.divpen_shortwave = update(vs.divpen_shortwave, at[1:], (pen[1:] - pen[:-1]) / vs.dzt[1:])
         vs.divpen_shortwave = update(vs.divpen_shortwave, at[0], pen[0] / vs.dzt[0])
 
-    @veros_routine
-    def set_forcing(self, state):
-        zero_tendency_sources(state)
-        vs = state.variables
-        settings = state.settings
+    def training_forcing(self):
+        """Dynamic forcing input for compile reuse; fixed buffer size per horizon."""
+        settings = self.state.settings
         n_forcing = 365 * 24 // settings.dt_forcing
-
         taux_forcing = self._read_ERA5_forcing("ewss", n_forcing, settings.dt_forcing) / 3600
         tauy_forcing = self._read_ERA5_forcing("nsss", n_forcing, settings.dt_forcing) / 3600
         qnet_forcing = (
@@ -523,6 +524,21 @@ class GlobalOneDegreeSetup(VerosSetup):
         evap_forcing = self._read_ERA5_forcing("e", n_forcing, settings.dt_forcing) / 3600
         tp_forcing = self._read_ERA5_forcing("tp", n_forcing, settings.dt_forcing) / 3600
 
+        return (taux_forcing, tauy_forcing, qnet_forcing, qsol_forcing, evap_forcing, tp_forcing,
+                npx.asarray(getattr(self, '_era5_forcing_window', {'start': 0})['start']))
+
+    @veros_routine
+    def set_forcing(self, state):
+        zero_tendency_sources(state)
+        vs = state.variables
+        settings = state.settings
+        n_forcing = 365 * 24 // settings.dt_forcing
+
+        forcing = getattr(self, '_training_forcing', None)
+        if forcing is None:
+            forcing = self.training_forcing()
+        taux_forcing, tauy_forcing, qnet_forcing, qsol_forcing, evap_forcing, tp_forcing, forcing_index_start = forcing
+
         vs.update(
             set_forcing_kernel(
                 state,
@@ -532,7 +548,7 @@ class GlobalOneDegreeSetup(VerosSetup):
                 qsol_forcing,
                 evap_forcing,
                 tp_forcing,
-                getattr(self, "_era5_forcing_window", {"start": 0})["start"],
+                forcing_index_start,
                 n_forcing,
             )
         )

@@ -24,6 +24,8 @@ class SchedulerConfig:
     mode: str = 'constant'  # constant, backtracking, keep_update
     min_rate: float = 1e-5
     start_update: int = 20
+    recovery_interval: int = 10
+    reject_worsening: bool = False
 
 
 @dataclass(frozen=True)
@@ -39,6 +41,7 @@ class InitialState:
 class CurriculumStage:
     n_steps: int
     updates: int
+    initial_rate: float | None = None
 
 
 @dataclass
@@ -51,6 +54,12 @@ class TrainConfig:
     sample_steps: int = 27
     updates: int = 80                 # additional updates when resuming
     learning_rate: float = .0005      # effective rate; no hidden backoff factor
+    reuse_rollouts: bool = False
+    worker_commands: list[list[str]] = field(default_factory=list)
+    worker_timeout: float = 600.
+    transition_checkpoint: str = 'latest'
+    fixed_loss_balance: bool = False
+    stage_initial_rate: float | None = None
     gradient_clip: float | None = None
     chunk_base: int = 3
     seed: int = 0
@@ -79,6 +88,19 @@ class TrainConfig:
             raise ValueError('Choose resume (full state) or weights (fresh optimizer)')
         if self.n_steps < 1 or self.sample_steps < 1 or self.n_steps % self.sample_steps:
             raise ValueError('n_steps must be a positive multiple of sample_steps')
+        if self.transition_checkpoint not in ('latest', 'best'):
+            raise ValueError('transition_checkpoint must be latest or best')
+        if self.scheduler.recovery_interval < 1 or (self.scheduler.reject_worsening and self.scheduler.mode != 'keep_update'):
+            raise ValueError('Invalid rejection or recovery configuration')
+        if not math.isfinite(self.worker_timeout) or self.worker_timeout <= 0:
+            raise ValueError('worker_timeout must be positive and finite')
+        if any(not isinstance(c, list) or any(not isinstance(x, str) for x in c) for c in self.worker_commands):
+            raise ValueError('worker_commands must be argument lists, without shell expansion')
+        rates = [self.stage_initial_rate] + [s.initial_rate for s in self.curriculum]
+        if any(v is not None and (not math.isfinite(v) or not self.scheduler.min_rate <= v <= self.learning_rate) for v in rates):
+            raise ValueError('Initial rates must lie between floor and ceiling')
+        if self.resume and self.stage_initial_rate is not None:
+            raise ValueError('Resume preserves saved LR; cannot reset stage_initial_rate')
         if self.updates < 1 or self.chunk_base < 2:
             raise ValueError('updates must be positive; chunk_base must be >=2')
         if not math.isfinite(self.learning_rate) or self.learning_rate <= 0:

@@ -45,3 +45,23 @@ class SmokeSetup(ACCBasicSetup):
 
 def create_setup():
     simulation=SmokeSetup();simulation.setup();return simulation
+
+
+class DynamicForcingSetup(SmokeSetup):
+    def training_forcing(self):
+        return (npx.asarray(1e-7)+self.state.variables.forcing_time_shift*1e-11,)
+
+    @veros_routine
+    def set_forcing(self,state):
+        forcing=getattr(self,'_training_forcing',None)
+        if forcing is None:forcing=self.training_forcing()
+        v=state.variables
+        v.temp_source=update(v.temp_source,at[:],forcing[0]*v.maskT)
+        v.salt_source=update(v.salt_source,at[:],0.)
+        v.u_source=update(v.u_source,at[:],0.)
+        v.v_source=update(v.v_source,at[:],0.)
+        apply_correction(self,state)
+
+
+def create_dynamic_setup():
+    simulation=DynamicForcingSetup();simulation.setup();return simulation

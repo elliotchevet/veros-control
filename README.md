@@ -206,3 +206,64 @@ state adjustment. Checkpoints are trusted-local pickle files.
 
 See [VALIDATION.md](VALIDATION.md) for checks and their scope. Training tests verify
 execution and numerical parity; they do not establish 30-year physical stability.
+
+
+## Reusable rollouts and persistent workers
+
+Set `reuse_rollouts: true` to compile one objective/gradient per horizon and reuse
+it across monthly cases. Initial state, reference targets, reference times and
+forcing buffers are JAX arguments, so a new date does not capture stale values.
+The original path remains the default. Geometry, model settings and array shapes
+must stay fixed within a stage. A new horizon compiles separately; mixed nested
+scan lengths such as 54, 135 and 189 are supported.
+
+The global example exposes `training_forcing()` and uses a fixed-size window for
+all initial offsets at one horizon. Custom setups whose forcing lives outside
+Veros state must implement that hook and consume `_training_forcing` when present;
+otherwise their Python-side forcing can be captured at trace time. Setups whose
+forcing is entirely in state need no hook. This change does not alter the global
+example's existing repeated-year forcing or restoring physics.
+
+For concurrent batch members, `worker_commands` is a list of process-launch
+prefixes (argument arrays, no shell). Each starts one persistent worker. For example,
+inside a suitable Slurm allocation:
+
+```json
+"worker_commands": [
+  ["srun", "--exclusive", "--exact", "--nodes=1", "--ntasks=1", "--cpus-per-task=8", "--gres=gpu:1"],
+  ["srun", "--exclusive", "--exact", "--nodes=1", "--ntasks=1", "--cpus-per-task=8", "--gres=gpu:1"],
+  ["srun", "--exclusive", "--exact", "--nodes=1", "--ntasks=1", "--cpus-per-task=8", "--gres=gpu:1"]
+]
+```
+
+An empty outer list runs serially; `[[]]` starts one local worker. Workers inherit
+the environment and Python interpreter, use a mode-0600 authentication key on
+shared storage at startup, then exchange arrays over persistent TCP. Use trusted
+allocation nodes (the protocol uses pickle) with reachable hostnames/ports.
+`worker_timeout` defaults to 600 seconds; increase it if initial compilation needs
+longer. Startup/remote failures propagate, and stage exit closes workers.
+No shared-file polling or worker restart occurs between dates. Use
+`XLA_PYTHON_CLIENT_PREALLOCATE=false`; the coordinating process also initializes
+the model. GPU placement and Slurm resources remain the launcher's responsibility.
+
+## Smooth curriculum and conservative restarts
+
+`examples/train_smooth.json` demonstrates **54 → 81 → 135 → 189 → 243**, 200 updates each,
+starting from a public-format 27h best checkpoint. Supply matching input paths and
+source objective/model settings. The new options are opt-in:
+
+- `transition_checkpoint: "best"`: pass best weights and their matching Adam state.
+- `fixed_loss_balance: true`: inherit the first source's loss denominators and
+  calibration through transitions, rather than recalibrating each horizon.
+- Per-stage `initial_rate`: reset stage LR independently of the `learning_rate`
+  recovery ceiling. Full resume preserves its saved LR and rejects an explicit reset.
+- `scheduler.start_update: 1`: no warmup.
+- `scheduler.recovery_interval: 2`: 50% recovery after two improving updates.
+- `scheduler.reject_worsening: true`: in `keep_update` mode, restore parameters
+  and Adam on a failed loss test while halving the next LR once, bounded by the
+  floor. At the floor, failing candidates remain rejected.
+
+Legacy defaults (latest transitions, stage recalibration, serial execution and
+retaining finite worsening updates) remain unchanged. Production research-script
+checkpoints use a different format; full-state clean continuation requires a clean
+public-format checkpoint. No automatic format conversion is performed.

@@ -41,12 +41,14 @@ def backtrack_candidate(params, direction, learning_rate, validate, max_retries=
 
 def loss_test_next_learning_rate(rate, before, after, epoch, *, min_rate=1e-5,
                                  max_rate=1e-3, clean_updates=0, start_epoch=20,
-                                 rtol=1e-8, atol=1e-10):
+                                 rtol=1e-8, atol=1e-10, recovery_interval=10):
     """Keep stable updates; halve next LR on failure, recover after 10 improvements."""
     if not all(np.isfinite(x) for x in (rate, before, after, min_rate, max_rate)):
         raise ValueError('Loss scheduler requires finite rates and losses')
     if not 0 <= min_rate <= rate <= max_rate or rate <= 0 or epoch < 1 or start_epoch < 1 or clean_updates < 0:
         raise ValueError('Invalid rate, floor, ceiling, counter, or epoch')
+    if recovery_interval < 1:
+        raise ValueError('Recovery interval must be positive')
     passed = bool(after <= before + atol + rtol * abs(before))
     tested = epoch >= start_epoch
     next_rate = rate
@@ -59,7 +61,7 @@ def loss_test_next_learning_rate(rate, before, after, epoch, *, min_rate=1e-5,
         action = 'halve'
     else:
         clean_updates = clean_updates + 1 if after < before else 0
-        if clean_updates >= 10:
+        if clean_updates >= recovery_interval:
             next_rate = min(max_rate, rate * 1.5)
             clean_updates = 0
             action = 'recover'
