@@ -35,6 +35,7 @@ class InitialState:
     month: int = 1
     reference_hours: float = 720.
     forcing_time_shift: float | None = None
+    initial_date: str | None = None
 
 
 @dataclass(frozen=True)
@@ -68,8 +69,14 @@ class TrainConfig:
     start_month: int = 1
     time_index: int = 0
     forcing_time_shift: float | None = None
+    initial_date: str | None = None
     resume: str | None = None
     weights: str | None = None
+    training_years: list[int] | None = None
+    reference_directory: str | None = None
+    forcing_directory: str | None = None
+    disable_surface_restoring: bool = False
+    correct_evaporation_sign: bool = False
     initial_states: list[InitialState] = field(default_factory=list)
     batch_size: int = 1
     checkpoint_months: list[int] = field(default_factory=list)
@@ -127,8 +134,25 @@ class TrainConfig:
             raise ValueError('Adaptive schedulers require candidate validation')
         if self.loss.normalization not in ('initial', 'no_nn', 'none'):
             raise ValueError('Unknown loss normalization')
+        if self.training_years is not None:
+            if len(self.training_years) != 2 or self.training_years[1] < self.training_years[0]:
+                raise ValueError('training_years requires an inclusive first/last year')
+            if not self.reference_directory or not self.forcing_directory:
+                raise ValueError('Dated training requires reference_directory and forcing_directory')
+            if not self.initial_states:
+                from veros_control.data.dated import dated_files
+                from veros_control.data.reference import snapshot_date
+                pairs = dated_files(self.reference_directory, *self.training_years, forcing_directory=self.forcing_directory)
+                self.initial_states = [InitialState(a,b,i,initial_date=snapshot_date(a).isoformat()) for i,(a,b) in pairs.items()]
+        from veros_control.data.dated import validate_date_options
+        validate_date_options(self)
+        for case in self.initial_states:
+            if case.initial_date:
+                from datetime import datetime
+                datetime.fromisoformat(case.initial_date)
+                if not self.forcing_directory: raise ValueError('Dated initial states require forcing_directory')
         months = [case.month for case in self.initial_states] or [self.start_month]
-        if len(set(months)) != len(months) or any(not 1 <= month <= 12 for month in months):
+        if len(set(months)) != len(months) or any(month < 1 for month in months) or any(case.month > 12 and not case.initial_date for case in self.initial_states):
             raise ValueError('Initial-state months must be distinct and in 1..12')
         if not 1 <= self.batch_size <= len(months):
             raise ValueError('Invalid initial-state batch size')
@@ -152,7 +176,7 @@ class TrainConfig:
 def load_config(path, cls=TrainConfig):
     path = Path(path).resolve()
     values = json.loads(path.read_text())
-    for key in ('output','initial','target','resume','weights','checkpoint','transition'):
+    for key in ('output','initial','target','resume','weights','checkpoint','transition','reference_directory','forcing_directory'):
         if values.get(key):
             values[key] = str((path.parent/values[key]).resolve())
     if 'setup' in values:
@@ -177,4 +201,10 @@ def load_config(path, cls=TrainConfig):
 def objective_signature(config):
     keys = ('setup','initial','target','n_steps','sample_steps','normalization','reference_hours','start_month','time_index','forcing_time_shift','model','correction','loss','initial_states','batch_size','checkpoint_months','scheduler','seed')
     values=asdict(config)
-    return json.loads(json.dumps({key:values[key] for key in keys}))
+    signature = {key:values[key] for key in keys}
+    if not signature['model'].get('use_date_embedding'): signature['model'].pop('use_date_embedding', None)
+    for case in signature['initial_states']:
+        if case.get('initial_date') is None: case.pop('initial_date', None)
+    for key in ('initial_date','forcing_directory','reference_directory','training_years','disable_surface_restoring','correct_evaporation_sign'):
+        if values[key] not in (None, False): signature[key] = values[key]
+    return json.loads(json.dumps(signature))

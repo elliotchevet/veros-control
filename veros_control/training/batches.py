@@ -26,10 +26,17 @@ def case_configs(config):
     cases = {}
     for case in config.initial_states:
         shift, interval = case.forcing_time_shift, case.reference_hours*3600.
-        if shift is None:
+        if case.initial_date:
+            from datetime import datetime
+            from veros_control.data.dated import model_timestamp
+            from veros_control.data.reference import snapshot_date
+            start = datetime.fromisoformat(case.initial_date)
+            interval = model_timestamp(snapshot_date(case.target))-model_timestamp(start)
+        elif shift is None:
             shift, interval = monthly_clock(case.initial, case.target, time.convert_time(1., 'years', 'seconds'))
         cases[case.month] = replace(config, initial=case.initial, target=case.target,
-            start_month=case.month, reference_hours=interval/3600., forcing_time_shift=shift)
+            start_month=start.month if case.initial_date else case.month, initial_date=case.initial_date,
+            reference_hours=interval/3600., forcing_time_shift=shift)
     return cases
 
 

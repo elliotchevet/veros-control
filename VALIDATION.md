@@ -84,3 +84,23 @@ Persistent workers are now optional. Production H200 speed/memory and multi-node
 Slurm execution of this clean implementation have not been benchmarked; the
 research implementation's measured speedup is not assumed to transfer unchanged.
 Existing production jobs and their snapshots were not modified.
+
+### Multi-year port (2026-11-11)
+
+- Unit suite: 51 tests, 48 passed and 3 optional main-parity checks skipped.
+- `tests/smoke_dated.py outputs/port_smoke_20261028b`: real Veros dated
+  initial conditions and yearly forcing reproduce uncached losses/gradients
+  with one cached gradient trace; two persistent TCP workers match serial.
+- Cases cover a December/January transition, leap February, all 120 monthly
+  training IDs, date-aware surface corrections, CDS evaporation/restoring
+  switches, and the global setup's forcing conversion/padding method.
+- CPU smoke environment: `VEROS_BACKEND=jax VEROS_LINEAR_SOLVER=scipy_jax
+  VEROS_DISKLESS_MODE=true JAX_PLATFORMS=cpu JAX_ENABLE_X64=1`, with BLAS/OMP
+  threads limited to one. CUDA discovery warnings on the login host are unrelated
+  to these CPU results.
+
+Production GPU performance of this clean port has not been measured. The paired
+31-year research job uses its frozen research source, not this clean port.
+- Existing one-month paired smoke also passed: both trajectories completed, monthly
+  NetCDF records and NN correction second moments were checked, and the correction
+  PDF was generated (`tests/smoke_paired.py`).

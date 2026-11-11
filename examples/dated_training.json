@@ -1,0 +1,94 @@
+{
+  "output": "../outputs/training/dated_surface",
+  "setup": "global_ocean/setup.py:create_simulation",
+  "initial": "../data/GLORYS12_1deg_199301_processed.nc",
+  "target": "../data/GLORYS12_1deg_199302_processed.nc",
+  "n_steps": 243,
+  "sample_steps": 27,
+  "updates": 150,
+  "learning_rate": 0.001,
+  "reference_hours": 720,
+  "normalization": "meanstd",
+  "model": {
+    "hidden_dim": 128,
+    "depth": 2,
+    "use_lon_lat": true,
+    "use_forcings": true,
+    "zero_output_init": true,
+    "residual_blocks": 3,
+    "surface_only": true,
+    "use_date_embedding": true
+  },
+  "correction": {
+    "tracer_epsilon": 1e-06,
+    "momentum_epsilon": 1e-07,
+    "momentum": true,
+    "bounds_per_hour": [
+      0.05,
+      0.05,
+      0.005,
+      0.005
+    ],
+    "depth_taper": null
+  },
+  "loss": {
+    "mode": "basin",
+    "levels": 1,
+    "pattern_lambda": 1,
+    "balance": true,
+    "interpolation": "sampled",
+    "normalization": "no_nn",
+    "spatial_filter": {
+      "version": "wet_helmholtz_v1",
+      "hours": [
+        27.0,
+        81.0,
+        243.0
+      ],
+      "wavelengths_km": [
+        0.0,
+        400.0,
+        800.0
+      ],
+      "raw_fraction": 0.1,
+      "solver_tolerance": 1e-08,
+      "solver_maxiter": 256
+    }
+  },
+  "curriculum": [
+    {
+      "n_steps": 27,
+      "updates": 150
+    },
+    {
+      "n_steps": 81,
+      "updates": 100
+    },
+    {
+      "n_steps": 243,
+      "updates": 50
+    }
+  ],
+  "scheduler": {
+    "mode": "keep_update",
+    "min_rate": 1e-05,
+    "start_update": 20
+  },
+  "batch_size": 3,
+  "checkpoint_months": [
+    1,
+    53,
+    117
+  ],
+  "training_years": [
+    1993,
+    2002
+  ],
+  "reference_directory": "../data",
+  "forcing_directory": "../data",
+  "reuse_rollouts": true,
+  "fixed_loss_balance": true,
+  "transition_checkpoint": "best",
+  "disable_surface_restoring": true,
+  "correct_evaporation_sign": true
+}

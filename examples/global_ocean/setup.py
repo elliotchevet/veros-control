@@ -509,9 +509,19 @@ class GlobalOneDegreeSetup(VerosSetup):
         vs.divpen_shortwave = update(vs.divpen_shortwave, at[1:], (pen[1:] - pen[:-1]) / vs.dzt[1:])
         vs.divpen_shortwave = update(vs.divpen_shortwave, at[0], pen[0] / vs.dzt[0])
 
+    def prepare_dated_forcing(self, state, directory, start, n_steps):
+        import numpy as np
+        from veros_control.data.dated import load_window
+        fields, first = load_window(directory, start, n_steps, state.settings.dt_tracer)
+        length = int(np.ceil(n_steps*state.settings.dt_tracer/10800))+3
+        fields = tuple(npx.asarray(np.pad(z, ((0,0),(0,0),(0,length-z.shape[-1])), mode='edge'))/3600 for z in fields)
+        ewss,nsss,longwave,latent,sensible,solar,evap,rain = fields
+        self._dated_forcing = (ewss,nsss,longwave+latent+sensible,solar,evap,rain,npx.asarray(first))
+
     def training_forcing(self):
         """Dynamic forcing input for compile reuse; fixed buffer size per horizon."""
         settings = self.state.settings
+        if settings.dated_forcing: return self._dated_forcing
         n_forcing = 365 * 24 // settings.dt_forcing
         taux_forcing = self._read_ERA5_forcing("ewss", n_forcing, settings.dt_forcing) / 3600
         tauy_forcing = self._read_ERA5_forcing("nsss", n_forcing, settings.dt_forcing) / 3600
@@ -532,7 +542,7 @@ class GlobalOneDegreeSetup(VerosSetup):
         zero_tendency_sources(state)
         vs = state.variables
         settings = state.settings
-        n_forcing = 365 * 24 // settings.dt_forcing
+        n_forcing = 2880 if settings.dated_forcing else 365 * 24 // settings.dt_forcing
 
         forcing = getattr(self, '_training_forcing', None)
         if forcing is None:
@@ -728,11 +738,16 @@ def set_forcing_kernel(
 
     qqnet = f1 * qnet_window[:, :, 0] + f2 * qnet_window[:, :, 1]
     t_star_cur = f1_rest * vs.t_star[..., n1_rest] + f2_rest * vs.t_star[..., n2_rest]
-    vs.forc_temp_surface = (qqnet + dQdT * (vs.temp[..., -1,vs.tau] - t_star_cur))  * vs.maskT[..., -1] / cp_0 / settings.rho_0
+    # Surface fluxes are assigned together below so both conventions share one path.
     evap_cur =  f1 * evap_window[:, :, 0] + f2 * evap_window[:, :, 1]
     tp_cur =  f1 * tp_window[:, :, 0] + f2 * tp_window[:, :, 1]
     s_star_cur = f1_rest * vs.s_star[..., n1_rest] + f2_rest * vs.s_star[..., n2_rest]
-    vs.forc_salt_surface = (Ks*(vs.salt[...,-1,vs.tau]-s_star_cur) -(tp_cur - evap_cur) * vs.salt[..., -1,vs.tau]) * vs.maskT[..., -1]
+    from veros_control.core.surface_fluxes import surface_tracer_fluxes
+    heat, salt = surface_tracer_fluxes(qqnet, vs.temp[..., -1,vs.tau], t_star_cur,
+        vs.salt[..., -1,vs.tau], s_star_cur, tp_cur, evap_cur, dQdT, Ks, settings.rho_0, cp_0,
+        disable_restoring=settings.disable_surface_restoring, correct_evaporation_sign=settings.correct_evaporation_sign)
+    vs.forc_temp_surface = heat * vs.maskT[..., -1]
+    vs.forc_salt_surface = salt * vs.maskT[..., -1]
 
     # apply simple ice mask
     mask1 = vs.temp[:, :, -1, vs.tau] * vs.maskT[:, :, -1] > -1.8

@@ -1,0 +1,16 @@
+{
+  "output": "../outputs/paired_dated",
+  "setup": "global_ocean/setup.py:create_simulation",
+  "initial": "../data/GLORYS12_1deg_199301_processed.nc",
+  "target": "../data/GLORYS12_1deg_199302_processed.nc",
+  "checkpoint": "../outputs/training/dated_surface/window_243/best.pkl",
+  "years": 11,
+  "start_year": 1993,
+  "max_cfl": 2.0,
+  "stop_on_invalid": true,
+  "initial_date": "1993-01-01",
+  "forcing_directory": "../data",
+  "disable_surface_restoring": true,
+  "correct_evaporation_sign": true,
+  "forcing_note": "Chronological ERA5; Gregorian months mapped to 30 model days"
+}

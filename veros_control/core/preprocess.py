@@ -133,9 +133,11 @@ def extract_features(state, tau, stats=None, normalize=False, mask=None, scaling
         features_mask = npx.concatenate([features_mask, forcing_mask], axis=-1)
 
     if normalize and stats is not None:
-        return _normalize_features(features, features_mask, stats, scaling_method)
-    else:
-        return features
+        features = _normalize_features(features, features_mask, stats, scaling_method)
+    if getattr(state.settings, 'use_date_embedding', False):
+        date = encode_date(vs.time + vs.forcing_time_shift, vs.date_year_offset)
+        features = npx.concatenate((features, npx.broadcast_to(date, (*features.shape[:-1], 3))), axis=-1)
+    return features
 
 
 
@@ -143,6 +145,7 @@ def fit_statistics(state, method, use_forcings):
     """Fit depth/channel statistics once on the training initial state."""
     import numpy as np
     features = np.asarray(extract_features(state,state.variables.tau,use_forcings=use_forcings))
+    if getattr(state.settings, 'use_date_embedding', False): features = features[..., :-3]
     masks = np.asarray(stack_input(state.variables,state.variables.tau,mask=True),dtype=bool)
     if use_forcings:
         masks = np.concatenate((masks,np.asarray(stack_forcing_input(state.variables,mask=True),dtype=bool)),axis=-1)
@@ -161,3 +164,9 @@ def fit_statistics(state, method, use_forcings):
         upper = np.where(masks,features,-np.inf).max(axis=(0,1))
         return npx.asarray(np.where(counts,lower,0.)),npx.asarray(np.where(counts,upper,0.))
     raise ValueError('Statistics require meanstd or minmax')
+
+
+def encode_date(seconds, year_offset):
+    """Seasonal sine/cosine and elapsed decades, outside physical normalization."""
+    years = seconds / (360. * 86400.)
+    return npx.stack((npx.sin(2*npx.pi*years), npx.cos(2*npx.pi*years), (year_offset+years)/10.))

@@ -78,6 +78,7 @@ def train_stage(config):
     config.validate_options()
     with simulation.state.settings.unlock():
         simulation.state.settings.use_forcings = config.model.use_forcings
+        simulation.state.settings.use_date_embedding = config.model.use_date_embedding
     simulation.set_forcing(simulation.state)
     if source is None and config.normalization != 'none':
         stats = fit_statistics(simulation.state, config.normalization, config.model.use_forcings)

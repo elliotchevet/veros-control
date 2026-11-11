@@ -15,7 +15,7 @@ import jax.numpy as jnp
 import numpy as np
 from veros_control.core.checkpoint import load_checkpoint, model_from_checkpoint
 from veros_control.core.correction import physical_model
-from veros_control.core.rollout import Rollout, solver_cache_scope
+from veros_control.core.rollout import Rollout, solver_cache_scope, training_forcing
 from veros_control.data.dataset import create_simulation
 from veros_control.evaluation.config import EvaluationConfig
 from veros_control.training.config import load_config
@@ -36,6 +36,9 @@ class PairedConfig(EvaluationConfig):
         super().validate_options()
         if self.years < 1 or (self.months is not None and self.months < 1) or self.start_month != 1:
             raise ValueError('Monthly archive requires positive years and a January initialization')
+        from datetime import datetime
+        if self.initial_date and datetime.fromisoformat(self.initial_date) != datetime(self.start_year,1,1):
+            raise ValueError('Dated paired runs require initial_date=start_year-01-01')
         if self.diagnostic_kind != 'train_diags':
             raise ValueError('This runner uses a training initial state and is classified as train_diags')
 
@@ -55,12 +58,20 @@ def run(config):
     n_steps = (config.months if config.months is not None else config.years*12)*720
     source = load_checkpoint(config.checkpoint)
     _, config.model, config.correction, stats, config.normalization = model_from_checkpoint(source, 1)
+    config.validate_options()
     # Only initialization needs a reference pair. No extrapolated target is used in the long run.
     initialization = replace(config, n_steps=1)
     sim, _ = create_simulation(initialization)
     if float(sim.state.settings.dt_tracer) != 3600.:
         raise ValueError('Monthly averaging currently requires hourly model timesteps')
-    if hasattr(sim, 'prepare_ERA5_forcing_window'):
+    forcing_files = []
+    if config.initial_date:
+        from veros_control.data.era5_sequence import ERA5Sequence
+        # The final interpolation window also reads the next January boundary.
+        sequence = ERA5Sequence(config.forcing_directory, config.start_year, config.start_year+(n_steps//720)//12)
+        forcing_files = sequence.manifest
+        config.forcing_note = 'Chronological ERA5; Gregorian months mapped to 30 model days; no forcing or state resets'
+    elif hasattr(sim, 'prepare_ERA5_forcing_window'):
         sim.prepare_ERA5_forcing_window(sim.state, n_steps)
     model, _, _, _, _ = model_from_checkpoint(source, sim.state.settings.nz)
     physical = physical_model(model, config.correction, sim.state.variables.zt)
@@ -68,7 +79,7 @@ def run(config):
     shutil.copyfile(config.checkpoint, output/'checkpoint.pkl')
     write_json(output/'config.json', asdict(config))
     write_json(output/'metadata.json', dict(diagnostic_kind='train_diags', sha256=fingerprint,
-        checkpoint_update=source['update'], forcing_note=config.forcing_note, calendar='360_day'))
+        checkpoint_update=source['update'], forcing_note=config.forcing_note, forcing_files=forcing_files, calendar='360_day'))
     summary = {}
     cases = [('baseline', lambda p,x,c,d:jnp.zeros((*x.shape[:2],4), dtype=x.dtype)), ('trained', physical)]
     for label, apply in cases:
@@ -85,17 +96,27 @@ def run(config):
             accumulated = jax.tree_util.tree_map(lambda a,b:a+b, accumulated, sample(current))
             return (current, accumulated), state_metrics(current)
 
-        advance = jax.jit(lambda carry:jax.lax.scan(step, carry, None, length=24))
+        @jax.jit
+        def advance(carry, forcing):
+            with training_forcing(sim, forcing):
+                return jax.lax.scan(step, carry, None, length=24)
         report = dict(status='running', checked_steps=0, max_cfl=0.)
         summary[label] = report
         stability_file = output/f'{label}_stability.csv'
         columns = ['step', 'nonfinite_count', 'min_salinity', 'max_cfl', 'min_temperature', 'max_temperature']
         with stability_file.open('w', newline='') as stream:
             csv.writer(stream).writerow(columns)
+        forcing = None
         for offset in range(0, n_steps, 24):
+            if config.initial_date and offset % 720 == 0:
+                from datetime import datetime
+                month_index = offset//720
+                date = datetime(config.start_year+month_index//12, month_index%12+1, 1)
+                sim.prepare_dated_forcing(state, config.forcing_directory, date, 720)
+                forcing = sim.training_forcing()
             try:
                 with solver_cache_scope():
-                    (state, sums), metrics = advance((state, sums))
+                    (state, sums), metrics = advance((state, sums), forcing)
                     metrics = np.asarray(jax.device_get(metrics))
             except Exception as exc:
                 report.update(status='runtime_exception', error=str(exc))

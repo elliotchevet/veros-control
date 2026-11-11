@@ -121,15 +121,18 @@ def monthly_clock(initial, target, model_year_seconds=360.*86400.):
     """
     from datetime import datetime, timedelta
     import calendar
-    def timestamp(path):
-        with h5netcdf.File(path, 'r') as nc:
-            variable=nc.variables['time']
-            if variable.attrs.get('calendar','standard') not in ('standard','gregorian','proleptic_gregorian'):
-                raise ValueError('Monthly training expects Gregorian input timestamps')
-            unit,origin=variable.attrs['units'].split(' since ')
-            factor={'seconds':1.,'hours':3600.,'days':86400.}[unit]
-            return datetime.fromisoformat(origin)+timedelta(seconds=float(variable[0])*factor)
-    start,end=timestamp(initial),timestamp(target)
+    start,end=snapshot_date(initial),snapshot_date(target)
     if end<=start:end=end.replace(year=end.year+1)
     scale=model_year_seconds/((366. if calendar.isleap(start.year) else 365.)*86400.)
     return (start-datetime(start.year,1,1)).total_seconds()*scale,(end-start).total_seconds()*scale
+
+
+def snapshot_date(path):
+    from datetime import datetime, timedelta
+    with h5netcdf.File(path, 'r') as nc:
+        variable=nc.variables['time']
+        if variable.attrs.get('calendar','standard') not in ('standard','gregorian','proleptic_gregorian'):
+            raise ValueError('Monthly training expects Gregorian input timestamps')
+        unit,origin=variable.attrs['units'].split(' since ')
+        factor={'seconds':1.,'hours':3600.,'days':86400.}[unit]
+        return datetime.fromisoformat(origin)+timedelta(seconds=float(variable[0])*factor)

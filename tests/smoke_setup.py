@@ -65,3 +65,19 @@ class DynamicForcingSetup(SmokeSetup):
 
 def create_dynamic_setup():
     simulation=DynamicForcingSetup();simulation.setup();return simulation
+
+class DatedForcingSetup(DynamicForcingSetup):
+    def prepare_dated_forcing(self, state, directory, start, n_steps):
+        from veros_control.data.dated import load_window
+        fields, index = load_window(directory, start, n_steps, state.settings.dt_tracer)
+        # Small-grid fixture still reads the actual calendar-mapped ERA5 records.
+        self._dated_value = npx.asarray(fields[0].mean()*1e-9)
+
+    def training_forcing(self):
+        if self.state.settings.dated_forcing:
+            return (self._dated_value,)
+        return super().training_forcing()
+
+
+def create_dated_setup():
+    simulation=DatedForcingSetup();simulation.setup();return simulation

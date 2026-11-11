@@ -267,3 +267,49 @@ Legacy defaults (latest transitions, stage recalibration, serial execution and
 retaining finite worsening updates) remain unchanged. Production research-script
 checkpoints use a different format; full-state clean continuation requires a clean
 public-format checkpoint. No automatic format conversion is performed.
+
+### Multi-year training and chronological ERA5
+
+[examples/dated_training.json](examples/dated_training.json) samples all 120
+months in 1993–2002 with matching-year forcing and next-month GLORYS targets.
+Set `training_years: [1993, 2002]`, `reference_directory`, and
+`forcing_directory`. Expected names are `GLORYS12_1deg_YYYYMM_processed.nc` and
+`ERA5_1deg_YYYY_Flux_processed.nc`. December needs the next January GLORYS file;
+forcing windows that cross New Year also need the following ERA5 file. Missing
+files are errors, never replaced with another year.
+
+The generated `InitialState.month` is a **case ID** (1–120); its `initial_date`
+contains the actual date. `checkpoint_months: [1, 53, 117]` selects January 1993,
+May 1997 and September 2002. These remain training-panel scores, not held-out
+validation. Explicit dated `initial_states` are also supported. Cases are shuffled
+without replacement and the seed/update number preserves order when resuming.
+
+Gregorian months, including leap February, map to 30 model days. ERA5 is linearly
+interpolated onto 3-hour model records; only the window needed by each rollout is
+read. Cached rollouts and persistent TCP workers receive the state, date and
+forcing as dynamic inputs. Set `reuse_rollouts: true` to retain compilation reuse.
+
+`model.use_date_embedding: true` appends seasonal sine/cosine plus elapsed decades
+since 1993, once per column and **after** physical-input normalization. Dated
+initial conditions are required. The architecture and date inputs are saved in
+checkpoints; changing them is not a compatible full-state resume.
+
+The supplied global-ocean setup additionally accepts `disable_surface_restoring`
+and `correct_evaporation_sign`. Both default to false, preserving historical
+physics. Corrected freshwater forcing uses `-(precipitation + evaporation)*S`
+for CDS-signed evaporation; disabling restoring removes both SST and SSS
+restoring. Custom setups must honor these physics settings themselves.
+
+[examples/dated_paired.json](examples/dated_paired.json) demonstrates 11 continuous
+years of chronological forcing, with monthly full-depth averages. Specify
+`initial_date: "1993-01-01"`, `start_year: 1993`, and `forcing_directory`. The state
+and date embedding advance continuously; neither resets at year boundaries.
+The final December window also requires the next January forcing file for its
+interpolation bracket. Dates beyond model training years are extrapolation.
+Physics options in evaluation are explicit, not inferred from the checkpoint.
+
+These options do not alter existing undated JSON configurations. Old public
+checkpoints retain their default architecture/resume semantics. Full optimizer
+resume still requires the public checkpoint format; research checkpoints can
+supply supported model weights but are not automatically converted into a full
+training-state checkpoint. This port does not add experiment-specific Slurm paths.

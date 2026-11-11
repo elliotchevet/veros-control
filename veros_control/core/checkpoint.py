@@ -91,6 +91,7 @@ def model_from_checkpoint(checkpoint, nz):
         if checkpoint.get('num_mlps',1) != 1 or any(checkpoint.get(k,False) for k in ('TS','use_one_hot','conservative_mixing','train_epsilon')):
             raise ValueError('Checkpoint uses an experimental architecture that is not supported')
         model_config = ModelConfig(hidden_dim=checkpoint.get('hidden_dim_nn',64),depth=checkpoint.get('depth_nn',2),
+            use_date_embedding=checkpoint.get('use_date_embedding',False),
             use_lon_lat=checkpoint.get('use_lon_lat',False),use_forcings=checkpoint.get('use_forcings',False),
             zero_output_init=checkpoint.get('zero_output_init',False),
             residual_blocks=checkpoint.get('residual_blocks',0),surface_only=checkpoint.get('surface_only',False))
